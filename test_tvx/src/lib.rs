@@ -1,6 +1,5 @@
 // Copyright 2019-2022 ChainSafe Systems
 // SPDX-License-Identifier: Apache-2.0, MIT
-
 use core::fmt;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap, VecDeque};
@@ -30,6 +29,7 @@ use fvm_shared::sector::{
 };
 use fvm_shared::version::NetworkVersion;
 use fvm_shared::{ActorID, MethodNum};
+use hex::encode;
 
 use multihash::derive::Multihash;
 use multihash::MultihashDigest;
@@ -39,6 +39,9 @@ use fil_actors_runtime::{actor_error, ActorError};
 use fil_actors_runtime::runtime::builtins::Type;
 use fil_actors_runtime::runtime::{ActorCode, DomainSeparationTag, EMPTY_ARR_CID, MessageInfo, Policy, Primitives, Runtime, RuntimePolicy, Verifier};
 use libsecp256k1::{recover, Message, RecoveryId, Signature as EcsdaSignature};
+use serde::{Deserialize, Serialize};
+use fil_actor_evm::interpreter::address::EthAddress;
+use fil_actor_evm::interpreter::U256;
 
 lazy_static::lazy_static! {
     pub static ref SYSTEM_ACTOR_CODE_ID: Cid = make_builtin(b"fil/test/system");
@@ -1510,4 +1513,80 @@ pub fn new_bls_addr(s: u8) -> Address {
     let mut key = [0u8; 48];
     rng.fill_bytes(&mut key);
     Address::new_bls(&key).unwrap()
+}
+
+pub fn string_to_U256(str: String) -> U256 {
+    let v = if str.starts_with("0x") {
+        let s = &str[2..str.len()];
+        hex::decode(s).unwrap()
+    } else {
+        hex::decode(str).unwrap()
+    };
+    let mut r = [0u8; 32];
+    r[32 - v.len()..32].copy_from_slice(&v);
+    U256::from_big_endian(&r)
+}
+
+pub fn string_to_ETHAddress(str: String) -> EthAddress {
+    println!("string_to_ETHAddress: {:?}", str);
+    let v = if str.starts_with("0x") {
+        let s = &str[2..str.len()];
+        hex::decode(s).unwrap()
+    } else {
+        hex::decode(str).unwrap()
+    };
+    let mut r = [0u8; 20];
+    r[20 - v.len()..20].copy_from_slice(&v);
+    EthAddress(r)
+}
+
+pub fn string_to_bytes(str: String) -> Vec<u8> {
+    if str.starts_with("0x") {
+        let s = &str[2..str.len()];
+        hex::decode(s).unwrap()
+    } else {
+        hex::decode(str).unwrap()
+    }
+}
+
+pub fn U256_to_bytes(u: U256) -> Vec<u8> {
+    let mut v = vec![0u8; 32];
+    (0..4).for_each(|i| {
+        let e = hex::decode(hex::encode(u.0[3 - i].to_be_bytes())).unwrap();
+        v[i * 8..(i + 1) * 8].copy_from_slice(&e);
+    });
+    v
+}
+
+pub fn is_create(to: String) -> bool {
+    hex::encode(vec![0u8; 20]) == hex::encode(string_to_ETHAddress(to).0)
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct EvmContractInput {
+    pub states: Vec<EvmContractState>,
+    pub context: EvmContractContext,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct EvmContractState {
+    pub address: String,
+    pub partial_storage_before: HashMap<String, String>,
+    pub partial_storage_after: HashMap<String, String>,
+    pub code: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct EvmContractContext {
+    pub from: String,
+    pub to: String,
+    pub input: String,
+    pub value: String,
+    pub block_number: usize,
+    pub timestamp: usize,
+    pub block_hash: String,
+    pub block_difficulty: usize,
+    pub status: usize,
+    #[serde(alias = "return")]
+    pub return_result: String
 }
