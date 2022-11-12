@@ -1,3 +1,5 @@
+mod evm_blockstore;
+
 // Copyright 2019-2022 ChainSafe Systems
 // SPDX-License-Identifier: Apache-2.0, MIT
 use core::fmt;
@@ -8,7 +10,7 @@ use std::rc::Rc;
 use anyhow::anyhow;
 use cid::multihash::{Code, Multihash as OtherMultihash};
 use cid::Cid;
-use fvm_ipld_blockstore::{Blockstore, MemoryBlockstore};
+use fvm_ipld_blockstore::Blockstore;
 use fvm_ipld_encoding::de::DeserializeOwned;
 use fvm_ipld_encoding::{Cbor, CborStore, RawBytes};
 use fvm_shared::address::{Address, Payload, Protocol};
@@ -29,19 +31,19 @@ use fvm_shared::sector::{
 };
 use fvm_shared::version::NetworkVersion;
 use fvm_shared::{ActorID, MethodNum};
-use hex::encode;
 
 use multihash::derive::Multihash;
 use multihash::MultihashDigest;
 
 use rand::prelude::*;
-use fil_actors_runtime::{actor_error, ActorError};
+use fil_actors_runtime::{actor_error, ActorError, AsActorError};
 use fil_actors_runtime::runtime::builtins::Type;
 use fil_actors_runtime::runtime::{ActorCode, DomainSeparationTag, EMPTY_ARR_CID, MessageInfo, Policy, Primitives, Runtime, RuntimePolicy, Verifier};
 use libsecp256k1::{recover, Message, RecoveryId, Signature as EcsdaSignature};
 use serde::{Deserialize, Serialize};
 use fil_actor_evm::interpreter::address::EthAddress;
 use fil_actor_evm::interpreter::U256;
+use crate::evm_blockstore::EvmBlockstore;
 
 lazy_static::lazy_static! {
     pub static ref SYSTEM_ACTOR_CODE_ID: Cid = make_builtin(b"fil/test/system");
@@ -116,7 +118,7 @@ pub fn make_builtin(bz: &[u8]) -> Cid {
     Cid::new_v1(IPLD_RAW, OtherMultihash::wrap(0, bz).expect("name too long"))
 }
 
-pub struct MockRuntime<BS = MemoryBlockstore> {
+pub struct MockRuntime<BS = EvmBlockstore> {
     pub epoch: ChainEpoch,
     pub miner: Address,
     pub base_fee: TokenAmount,
@@ -143,6 +145,7 @@ pub struct MockRuntime<BS = MemoryBlockstore> {
 
     // Actor State
     pub state: Option<Cid>,
+    pub states: Vec<Option<Cid>>,
     pub balance: RefCell<TokenAmount>,
 
     // VM Impl
@@ -164,6 +167,8 @@ pub struct MockRuntime<BS = MemoryBlockstore> {
     pub actor_balances: HashMap<ActorID, TokenAmount>,
     pub tipset_timestamp: u64,
     pub tipset_cids: Vec<Cid>,
+
+    pub return_result: String,
 }
 
 #[derive(Default)]
@@ -295,7 +300,7 @@ impl Default for MockRuntime {
     }
 }
 
-impl<BS> MockRuntime<BS> {
+impl<BS: Clone> MockRuntime<BS> {
     pub fn new(store: BS) -> Self {
         Self {
             epoch: Default::default(),
@@ -315,6 +320,7 @@ impl<BS> MockRuntime<BS> {
             recover_pubkey_fn: Box::new(recover_secp_public_key),
             network_version: NetworkVersion::V0,
             state: Default::default(),
+            states: Default::default(),
             balance: Default::default(),
             in_call: Default::default(),
             store: Rc::new(store),
@@ -327,7 +333,12 @@ impl<BS> MockRuntime<BS> {
             actor_balances: Default::default(),
             tipset_timestamp: Default::default(),
             tipset_cids: Default::default(),
+            return_result: Default::default(),
         }
+    }
+
+    pub fn set_return_result(&mut self, return_result: String) {
+        self.return_result = return_result;
     }
 }
 
@@ -458,6 +469,7 @@ impl<BS: Blockstore> MockRuntime<BS> {
 
     pub fn replace_state<C: Cbor>(&mut self, obj: &C) {
         self.state = Some(self.store_put(obj));
+        self.states.push(self.state);
     }
 
     pub fn set_balance(&mut self, amount: TokenAmount) {
@@ -524,6 +536,7 @@ impl<BS: Blockstore> MockRuntime<BS> {
 
         if res.is_err() {
             self.state = prev_state;
+            self.states.push(self.state);
         }
         self.in_call = false;
         res
@@ -1016,6 +1029,7 @@ impl<BS: Blockstore> Runtime for MockRuntime<BS> {
             return Err(actor_error!(illegal_state; "state already constructed"));
         }
         self.state = Some(self.store_put(obj));
+        self.states.push(self.state);
         Ok(())
     }
 
@@ -1029,6 +1043,7 @@ impl<BS: Blockstore> Runtime for MockRuntime<BS> {
 
     fn set_state_root(&mut self, root: &Cid) -> Result<(), ActorError> {
         self.state = Some(*root);
+        self.states.push(self.state);
         Ok(())
     }
 
@@ -1045,6 +1060,7 @@ impl<BS: Blockstore> Runtime for MockRuntime<BS> {
         let ret = f(&mut read_only, self);
         if ret.is_ok() {
             self.state = Some(self.store_put(&read_only));
+            self.states.push(self.state.clone());
         }
         self.in_transaction = false;
         ret
@@ -1528,7 +1544,6 @@ pub fn string_to_U256(str: String) -> U256 {
 }
 
 pub fn string_to_ETHAddress(str: String) -> EthAddress {
-    println!("string_to_ETHAddress: {:?}", str);
     let v = if str.starts_with("0x") {
         let s = &str[2..str.len()];
         hex::decode(s).unwrap()
