@@ -6,7 +6,7 @@ use fvm_shared::address::{Address, Payload};
 use interpreter::{address::EthAddress, system::load_bytecode};
 
 pub mod interpreter;
-mod state;
+pub mod state;
 
 use {
     crate::interpreter::{execute, Bytecode, ExecutionState, StatusCode, System, U256},
