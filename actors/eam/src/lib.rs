@@ -111,7 +111,7 @@ pub type CreateReturn = Return;
 pub type Create2Return = Return;
 
 impl Return {
-    fn from_exec4(exec4: Exec4Return, eth_address: EthAddress) -> Self {
+    pub fn from_exec4(exec4: Exec4Return, eth_address: EthAddress) -> Self {
         Self {
             actor_id: exec4.id_address.id().unwrap(),
             robust_address: exec4.robust_address,
@@ -166,7 +166,7 @@ fn create_actor(
     Ok(Return::from_exec4(ret, new_addr))
 }
 
-fn resolve_caller(rt: &mut impl Runtime) -> Result<EthAddress, ActorError> {
+pub fn resolve_caller(rt: &mut impl Runtime) -> Result<EthAddress, ActorError> {
     let caller_id = rt.message().caller().id().unwrap();
     Ok(match rt.lookup_address(caller_id).map(|a| *a.payload()) {
         Some(Payload::Delegated(addr)) if addr.namespace() == EAM_ACTOR_ID => EthAddress(
