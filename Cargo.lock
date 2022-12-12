@@ -584,7 +584,7 @@ dependencies = [
  "coins-core",
  "digest 0.10.5",
  "getrandom",
- "hmac 0.12.1",
+ "hmac",
  "k256",
  "lazy_static",
  "serde",
@@ -602,7 +602,7 @@ dependencies = [
  "coins-bip32",
  "getrandom",
  "hex",
- "hmac 0.12.1",
+ "hmac",
  "pbkdf2 0.11.0",
  "rand",
  "sha2 0.10.6",
@@ -969,7 +969,7 @@ dependencies = [
  "ctr",
  "digest 0.10.5",
  "hex",
- "hmac 0.12.1",
+ "hmac",
  "pbkdf2 0.11.0",
  "rand",
  "scrypt",
@@ -2029,9 +2029,9 @@ dependencies = [
 
 [[package]]
 name = "fvm_ipld_hamt"
-version = "0.6.0"
+version = "0.6.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e48ac0db0c676fe9663f34782d448320b0c71d5e0afb7df38914983ae4d46faa"
+checksum = "0c942494dde990aeac314311bde34c787be99cab7d0836397a75556cbaa2c3e7"
 dependencies = [
  "anyhow",
  "byteorder",
@@ -2217,32 +2217,11 @@ checksum = "7ebdb29d2ea9ed0083cd8cece49bbd968021bd99b0849edb4a9a7ee0fdf6a4e0"
 
 [[package]]
 name = "hmac"
-version = "0.8.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "126888268dcc288495a26bf004b38c5fdbb31682f992c84ceb046a1f0fe38840"
-dependencies = [
- "crypto-mac",
- "digest 0.9.0",
-]
-
-[[package]]
-name = "hmac"
 version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
 dependencies = [
  "digest 0.10.5",
-]
-
-[[package]]
-name = "hmac-drbg"
-version = "0.3.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "17ea0a1394df5b6574da6e0c1ade9e78868c9fb0a4e5ef4428e32da4676b85b1"
-dependencies = [
- "digest 0.9.0",
- "generic-array 0.14.6",
- "hmac 0.8.1",
 ]
 
 [[package]]
@@ -2521,14 +2500,12 @@ dependencies = [
  "arrayref",
  "base64 0.13.1",
  "digest 0.9.0",
- "hmac-drbg",
  "libsecp256k1-core",
  "libsecp256k1-gen-ecmult",
  "libsecp256k1-gen-genmult",
  "rand",
  "serde",
  "sha2 0.9.9",
- "typenum",
 ]
 
 [[package]]
@@ -2881,7 +2858,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "83a0692ec44e4cf1ef28ca317f14f8f07da2d95ec3fa01f86e4467b725e60917"
 dependencies = [
  "digest 0.10.5",
- "hmac 0.12.1",
+ "hmac",
  "password-hash 0.4.2",
  "sha2 0.10.6",
 ]
@@ -3188,7 +3165,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "88c86280f057430a52f4861551b092a01b419b8eacefc7c995eacb9dc132fe32"
 dependencies = [
  "crypto-bigint",
- "hmac 0.12.1",
+ "hmac",
  "zeroize",
 ]
 
@@ -3326,7 +3303,7 @@ version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e73d6d7c6311ebdbd9184ad6c4447b2f36337e327bda107d3ba9e3c374f9d325"
 dependencies = [
- "hmac 0.12.1",
+ "hmac",
  "password-hash 0.3.2",
  "pbkdf2 0.10.1",
  "salsa20",
@@ -3737,7 +3714,9 @@ dependencies = [
  "anyhow",
  "bimap",
  "blake2b_simd",
+ "bytes",
  "cid",
+ "ethers",
  "fil_actor_account",
  "fil_actor_cron",
  "fil_actor_datacap",
@@ -3761,11 +3740,9 @@ dependencies = [
  "fvm_ipld_hamt",
  "fvm_shared",
  "hex",
- "hex-literal",
  "indexmap",
  "integer-encoding",
  "lazy_static",
- "libsecp256k1",
  "log",
  "multihash",
  "num-derive",
@@ -3773,7 +3750,12 @@ dependencies = [
  "rand",
  "rand_chacha",
  "regex",
+ "rlp",
  "serde",
+ "serde_json",
+ "serde_tuple",
+ "test-case",
+ "test_vm",
  "thiserror",
 ]
 
