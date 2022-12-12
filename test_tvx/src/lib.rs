@@ -1,13 +1,20 @@
 use anyhow::anyhow;
 use bimap::BiBTreeMap;
+use bytes::Bytes;
 use cid::multihash::Code;
 use cid::multihash::MultihashDigest;
 use cid::Cid;
 use fil_actor_account::{Actor as AccountActor, State as AccountState};
 use fil_actor_cron::{Actor as CronActor, Entry as CronEntry, State as CronState};
 use fil_actor_datacap::{Actor as DataCapActor, State as DataCapState};
-use fil_actor_eam::{Create2Params, Create2Return, EamActor, EthAddress, EvmConstructorParams, ext, Return, RlpCreateAddress};
-use fil_actor_evm::{ConstructorParams, EVM_CONTRACT_REVERTED, EvmContractActor, Method};
+use fil_actor_eam::ext::init::Exec4Params;
+use fil_actor_eam::{
+    ext, Create2Params, Create2Return, EamActor, EthAddress, EvmConstructorParams, Return,
+    RlpCreateAddress,
+};
+use fil_actor_evm::interpreter::{execute, Bytecode, ExecutionState, StatusCode, System, U256};
+use fil_actor_evm::state::State;
+use fil_actor_evm::{ConstructorParams, EvmContractActor, Method, EVM_CONTRACT_REVERTED};
 use fil_actor_init::{Actor as InitActor, ExecReturn, State as InitState};
 use fil_actor_market::{Actor as MarketActor, Method as MarketMethod, State as MarketState};
 use fil_actor_miner::{Actor as MinerActor, MinerInfo, State as MinerState};
@@ -17,14 +24,14 @@ use fil_actor_power::{Actor as PowerActor, Method as MethodPower, State as Power
 use fil_actor_reward::{Actor as RewardActor, State as RewardState};
 use fil_actor_system::{Actor as SystemActor, State as SystemState};
 use fil_actor_verifreg::{Actor as VerifregActor, State as VerifRegState};
-use fil_actors_runtime::{actor_error, AsActorError, cbor, EAM_ACTOR_ID};
 use fil_actors_runtime::cbor::serialize;
 use fil_actors_runtime::runtime::builtins::Type;
 use fil_actors_runtime::runtime::{
     ActorCode, DomainSeparationTag, MessageInfo, Policy, Primitives, Runtime, RuntimePolicy,
-    Verifier, EMPTY_ARR_CID
+    Verifier, EMPTY_ARR_CID,
 };
 use fil_actors_runtime::test_utils::*;
+use fil_actors_runtime::{actor_error, cbor, AsActorError, EAM_ACTOR_ID};
 use fil_actors_runtime::{
     ActorError, BURNT_FUNDS_ACTOR_ADDR, CRON_ACTOR_ADDR, EAM_ACTOR_ADDR, FIRST_NON_SINGLETON_ADDR,
     INIT_ACTOR_ADDR, REWARD_ACTOR_ADDR, STORAGE_MARKET_ACTOR_ADDR, STORAGE_POWER_ACTOR_ADDR,
@@ -58,19 +65,16 @@ use fvm_shared::smooth::FilterEstimate;
 use fvm_shared::version::NetworkVersion;
 use fvm_shared::{ActorID, MethodNum, IPLD_RAW, METHOD_CONSTRUCTOR, METHOD_SEND};
 use regex::Regex;
+use rlp::Encodable;
 use serde::ser;
+use serde::{Deserialize, Serialize};
 use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::error::Error;
-use std::{fmt, iter};
 use std::ops::Add;
-use bytes::Bytes;
-use rlp::Encodable;
-use fil_actor_evm::interpreter::{Bytecode, execute, ExecutionState, StatusCode, System, U256};
-use serde::{Deserialize, Serialize};
-use fil_actor_eam::ext::init::Exec4Params;
-use fil_actor_evm::state::State;
+use std::{fmt, iter};
 
+pub mod mock_single_actors;
 pub mod util;
 
 pub struct VM<'bs> {
@@ -211,7 +215,7 @@ impl<'bs> VM<'bs> {
             METHOD_SEND,
             RawBytes::default(),
         )
-            .unwrap();
+        .unwrap();
         let verifreg_root_signer =
             v.normalize_address(&Address::new_bls(VERIFREG_ROOT_KEY).unwrap()).unwrap();
         assert_eq!(TEST_VERIFREG_ROOT_SIGNER_ADDR, verifreg_root_signer);
@@ -225,7 +229,7 @@ impl<'bs> VM<'bs> {
             },
             "multisig ctor params",
         )
-            .unwrap();
+        .unwrap();
         let msig_ctor_ret: ExecReturn = v
             .apply_message(
                 SYSTEM_ACTOR_ADDR,
@@ -279,7 +283,7 @@ impl<'bs> VM<'bs> {
             METHOD_SEND,
             RawBytes::default(),
         )
-            .unwrap();
+        .unwrap();
 
         v.checkpoint();
         v
@@ -342,8 +346,8 @@ impl<'bs> VM<'bs> {
     }
 
     pub fn put_store<S>(&self, obj: &S) -> Cid
-        where
-            S: ser::Serialize,
+    where
+        S: ser::Serialize,
     {
         self.store.put_cbor(obj, Code::Blake2b256).unwrap()
     }
@@ -358,7 +362,7 @@ impl<'bs> VM<'bs> {
             &self.state_root.borrow(),
             self.store,
         )
-            .unwrap();
+        .unwrap();
         let actor = actors.get(&addr.to_bytes()).unwrap().cloned();
         actor.iter().for_each(|a| {
             self.actors_cache.borrow_mut().insert(addr, a.clone());
@@ -378,7 +382,7 @@ impl<'bs> VM<'bs> {
             &self.state_root.borrow(),
             self.store,
         )
-            .unwrap();
+        .unwrap();
         for (addr, act) in self.actors_cache.borrow().iter() {
             actors.set(addr.to_bytes().into(), act.clone()).unwrap();
         }
@@ -409,9 +413,9 @@ impl<'bs> VM<'bs> {
     }
 
     pub fn mutate_state<C, F>(&self, addr: Address, f: F)
-        where
-            C: Cbor,
-            F: FnOnce(&mut C),
+    where
+        C: Cbor,
+        F: FnOnce(&mut C),
     {
         let mut a = self.get_actor(addr).unwrap();
         let mut st = self.store.get_cbor::<C>(&a.head).unwrap().unwrap();
@@ -497,7 +501,7 @@ impl<'bs> VM<'bs> {
             &self.state_root.borrow(),
             self.store,
         )
-            .unwrap();
+        .unwrap();
 
         let mut manifest = BiBTreeMap::new();
         actors
@@ -546,9 +550,14 @@ impl<'bs> VM<'bs> {
     // to: 0x00
     pub fn find_construct_eth_addr(&self) -> Option<EthAddress> {
         if EthAddress([0u8; 20]).eq(&string_to_ETHAddress(self.input.context.to.clone())) {
-            let rlp = RlpCreateAddress { address: string_to_ETHAddress(self.input.context.from.clone()), nonce: self.input.context.nonce.clone() };
-            let eth_addr = EthAddress(self.hash(SupportedHashes::Keccak256, &rlp.rlp_bytes())[12..32].try_into().unwrap());
-            return Some(eth_addr)
+            let rlp = RlpCreateAddress {
+                address: string_to_ETHAddress(self.input.context.from.clone()),
+                nonce: self.input.context.nonce.clone(),
+            };
+            let eth_addr = EthAddress(
+                self.hash(SupportedHashes::Keccak256, &rlp.rlp_bytes())[12..32].try_into().unwrap(),
+            );
+            return Some(eth_addr);
         }
         None
     }
@@ -560,7 +569,7 @@ impl<'bs> VM<'bs> {
             let eth_addr = string_to_ETHAddress(k.to_string());
             if let Some(construct_eth_addr) = construct_eth_addr {
                 if construct_eth_addr.eq(&eth_addr) {
-                    continue
+                    continue;
                 }
             }
             let mut salt = [0u8; 32];
@@ -572,8 +581,10 @@ impl<'bs> VM<'bs> {
                     TokenAmount::zero(),
                     fil_actor_eam::Method::Create2 as u64,
                     fil_actor_eam::Create2Params { initcode: vec![0u8; 0], salt },
-                ).unwrap();
-            let actor: fil_actor_eam::Create2Return = create_result.ret.deserialize().expect("failed to decode results");
+                )
+                .unwrap();
+            let actor: fil_actor_eam::Create2Return =
+                create_result.ret.deserialize().expect("failed to decode results");
             participants.push(actor);
         }
         self.participants = participants;
@@ -584,8 +595,7 @@ impl<'bs> VM<'bs> {
     }
 
     // if edt addr is 0x00, take last bytecode
-    pub fn get_participant_bytecode(&self, from: Address, to: EthAddress) -> Option<Vec<u8>>
-    {
+    pub fn get_participant_bytecode(&self, from: Address, to: EthAddress) -> Option<Vec<u8>> {
         let mut bytecode: Option<Vec<u8>> = None;
         for i in 0..self.participants.len() {
             let p = self.participants.get(i).unwrap();
@@ -618,10 +628,10 @@ impl<'bs> VM<'bs> {
             };
             bytecode = Some(load_participant_bytecode(&mut new_ctx).unwrap());
             if to.eq(&p.eth_address) {
-                return bytecode
+                return bytecode;
             }
         }
-        return bytecode
+        return bytecode;
     }
 
     pub fn get_participants_store(&self) -> HashMap<String, HashMap<U256, U256>> {
@@ -634,16 +644,22 @@ impl<'bs> VM<'bs> {
             let store = self.store.clone();
             let state: State = store
                 .get_cbor(&state_root)
-                .context_code(ExitCode::USR_SERIALIZATION, "failed to decode state").unwrap()
-                .context_code(ExitCode::USR_ILLEGAL_STATE, "state not in blockstore").unwrap();
-            let slots = Hamt::<_, U256, U256>::load(&state.contract_state, store).context_code(ExitCode::USR_ILLEGAL_STATE, "state not in blockstore").unwrap();
+                .context_code(ExitCode::USR_SERIALIZATION, "failed to decode state")
+                .unwrap()
+                .context_code(ExitCode::USR_ILLEGAL_STATE, "state not in blockstore")
+                .unwrap();
+            let slots = Hamt::<_, U256, U256>::load(&state.contract_state, store)
+                .context_code(ExitCode::USR_ILLEGAL_STATE, "state not in blockstore")
+                .unwrap();
             println!("eth addr: {:?}", hex::encode(p.eth_address.0));
-            slots.for_each(|k, v| {
-                map.insert(k.clone(), v.clone());
-                println!("--k: {:?}", hex::encode(U256_to_bytes(k.clone())));
-                println!("--v: {:?}", hex::encode(U256_to_bytes(v.clone())));
-                Ok(())
-            }).unwrap();
+            slots
+                .for_each(|k, v| {
+                    map.insert(k.clone(), v.clone());
+                    println!("--k: {:?}", hex::encode(U256_to_bytes(k.clone())));
+                    println!("--v: {:?}", hex::encode(U256_to_bytes(v.clone())));
+                    Ok(())
+                })
+                .unwrap();
             storage.insert(hex::encode(p.eth_address.0), map);
         }
         storage
@@ -653,7 +669,7 @@ impl<'bs> VM<'bs> {
         for i in 0..self.participants.len() {
             let p = self.participants.get(i).unwrap();
             if string_to_ETHAddress(to.clone()).eq(&p.eth_address) {
-                return Some(p.robust_address)
+                return Some(p.robust_address);
             }
         }
         None
@@ -661,9 +677,9 @@ impl<'bs> VM<'bs> {
 }
 
 pub fn load_participant_bytecode<RT>(rt: &mut RT) -> Result<Vec<u8>, ActorError>
-    where
-        RT: Runtime,
-        RT::Blockstore: Clone,
+where
+    RT: Runtime,
+    RT::Blockstore: Clone,
 {
     rt.validate_immediate_caller_accept_any()?;
     let mut system = System::load(rt, true).map_err(|e| {
@@ -869,20 +885,21 @@ impl<'invocation, 'bs> InvocationCtx<'invocation, 'bs> {
             }
             Type::EVM => {
                 if self.msg.method == fil_actor_evm::Method::Constructor as u64 {
-                    let constructorParams: ConstructorParams =  cbor::deserialize_params(&params).unwrap();
+                    let constructorParams: ConstructorParams =
+                        cbor::deserialize_params(&params).unwrap();
                     if constructorParams.initcode.len() == 0 {
-                        return evm_constructor(self, &self.v.input)
+                        return evm_constructor(self, &self.v.input);
                     }
                 }
                 EvmContractActor::invoke_method(self, self.msg.method, &params)
-            },
+            }
             Type::EAM => {
                 if self.msg.method == fil_actor_eam::Method::Create2 as u64 {
-                    let create2Params: Create2Params =  cbor::deserialize_params(&params).unwrap();
-                    return eam_create2(self, create2Params)
+                    let create2Params: Create2Params = cbor::deserialize_params(&params).unwrap();
+                    return eam_create2(self, create2Params);
                 }
                 EamActor::invoke_method(self, self.msg.method, &params)
-            },
+            }
         };
         if res.is_ok() && !self.caller_validated {
             res = Err(actor_error!(assertion_failed, "failed to validate caller"));
@@ -896,9 +913,9 @@ impl<'invocation, 'bs> InvocationCtx<'invocation, 'bs> {
 }
 
 pub fn evm_constructor<RT>(rt: &mut RT, input: &EvmContractInput) -> Result<RawBytes, ActorError>
-    where
-        RT: Runtime,
-        RT::Blockstore: Clone,
+where
+    RT: Runtime,
+    RT::Blockstore: Clone,
 {
     rt.validate_immediate_caller_type(iter::once(&Type::Init))?;
 
@@ -1058,8 +1075,8 @@ impl<'invocation, 'bs> Runtime for InvocationCtx<'invocation, 'bs> {
         &mut self,
         namespace_manager_addresses: I,
     ) -> Result<(), ActorError>
-        where
-            I: IntoIterator<Item = u64>,
+    where
+        I: IntoIterator<Item = u64>,
     {
         if self.caller_validated {
             return Err(ActorError::unchecked(
@@ -1093,8 +1110,8 @@ impl<'invocation, 'bs> Runtime for InvocationCtx<'invocation, 'bs> {
     }
 
     fn validate_immediate_caller_is<'a, I>(&mut self, addresses: I) -> Result<(), ActorError>
-        where
-            I: IntoIterator<Item = &'a Address>,
+    where
+        I: IntoIterator<Item = &'a Address>,
     {
         if self.caller_validated {
             return Err(ActorError::unchecked(
@@ -1115,8 +1132,8 @@ impl<'invocation, 'bs> Runtime for InvocationCtx<'invocation, 'bs> {
     }
 
     fn validate_immediate_caller_type<'a, I>(&mut self, types: I) -> Result<(), ActorError>
-        where
-            I: IntoIterator<Item = &'a Type>,
+    where
+        I: IntoIterator<Item = &'a Type>,
     {
         if self.caller_validated {
             return Err(ActorError::unchecked(
@@ -1232,9 +1249,9 @@ impl<'invocation, 'bs> Runtime for InvocationCtx<'invocation, 'bs> {
     }
 
     fn transaction<C, RT, F>(&mut self, f: F) -> Result<RT, ActorError>
-        where
-            C: Cbor,
-            F: FnOnce(&mut C, &mut Self) -> Result<RT, ActorError>,
+    where
+        C: Cbor,
+        F: FnOnce(&mut C, &mut Self) -> Result<RT, ActorError>,
     {
         let mut st = self.state::<C>().unwrap();
         self.allow_side_effects = false;
@@ -1632,7 +1649,8 @@ pub fn string_to_U256(str: String) -> U256 {
             s
         } else {
             str.to_string()
-        }).unwrap()
+        })
+        .unwrap()
     } else {
         hex::decode(if str.len().is_odd() {
             let mut s = String::from("0");
@@ -1640,7 +1658,8 @@ pub fn string_to_U256(str: String) -> U256 {
             s
         } else {
             str.to_string()
-        }).unwrap()
+        })
+        .unwrap()
     };
     let mut r = [0u8; 32];
     r[32 - v.len()..32].copy_from_slice(&v);
@@ -1656,7 +1675,8 @@ pub fn string_to_ETHAddress(str: String) -> EthAddress {
             s
         } else {
             str.to_string()
-        }).unwrap()
+        })
+        .unwrap()
     } else {
         hex::decode(if str.len().is_odd() {
             let mut s = String::from("0");
@@ -1664,7 +1684,8 @@ pub fn string_to_ETHAddress(str: String) -> EthAddress {
             s
         } else {
             str.to_string()
-        }).unwrap()
+        })
+        .unwrap()
     };
     let mut r = [0u8; 20];
     r[20 - v.len()..20].copy_from_slice(&v);
@@ -1680,7 +1701,8 @@ pub fn string_to_bytes(str: String) -> Vec<u8> {
             s
         } else {
             str.to_string()
-        }).unwrap()
+        })
+        .unwrap()
     } else {
         hex::decode(if str.len().is_odd() {
             let mut s = String::from("0");
@@ -1688,7 +1710,8 @@ pub fn string_to_bytes(str: String) -> Vec<u8> {
             s
         } else {
             str.to_string()
-        }).unwrap()
+        })
+        .unwrap()
     }
 }
 
@@ -1711,7 +1734,7 @@ impl EvmContractInput {
     pub fn find_state(&self, eth_addr: EthAddress) -> Option<&EvmContractState> {
         for k in self.states.keys() {
             if string_to_ETHAddress(k.to_string()).eq(&eth_addr) {
-                return self.states.get(&k.clone())
+                return self.states.get(&k.clone());
             }
         }
         None
@@ -1738,12 +1761,13 @@ pub struct EvmContractContext {
     pub block_difficulty: usize,
     pub status: usize,
     #[serde(alias = "return")]
-    pub return_result: String
+    pub return_result: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ValueType {
     #[serde(alias = "type")]
     pub v_type: String,
-    pub hex: String
+    pub hex: String,
 }
+
