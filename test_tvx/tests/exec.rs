@@ -1,13 +1,18 @@
 use fil_actor_eam as eam;
 use fil_actor_eam::{EvmConstructorParams, RlpCreateAddress};
 use fil_actor_evm::interpreter::address::EthAddress;
-use fil_actors_runtime::{cbor, EAM_ACTOR_ADDR, SYSTEM_ACTOR_ADDR, SYSTEM_ACTOR_ID};
+use fil_actor_init::ExecReturn;
+use fil_actors_runtime::test_utils::MULTISIG_ACTOR_CODE_ID;
+use fil_actors_runtime::{
+    cbor, EAM_ACTOR_ADDR, INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR, SYSTEM_ACTOR_ID,
+};
 // use fvm::machine::Manifest;
 use fvm_ipld_blockstore::MemoryBlockstore;
 use fvm_ipld_encoding::{strict_bytes, BytesDe, Cbor, CborStore, RawBytes};
 use fvm_ipld_hamt::{BytesKey, Hamt, Sha256};
 use fvm_shared::address::Address;
 use fvm_shared::econ::TokenAmount;
+use fvm_shared::METHOD_SEND;
 use multihash::Code;
 use num_traits::Zero;
 use rlp::Encodable;
@@ -20,6 +25,8 @@ use test_tvx::util::create_account;
 use test_tvx::{
     string_to_ETHAddress, string_to_U256, string_to_bytes, EvmContractInput, FAUCET_ROOT_KEY, VM,
 };
+use test_vm::util::apply_ok;
+use test_vm::{TEST_FAUCET_ADDR, TEST_VERIFREG_ROOT_SIGNER_ADDR, VERIFREG_ROOT_KEY};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -215,14 +222,38 @@ fn mock_single_actor_blockstore() {
     mock.mock_system_actor();
     mock.mock_init_actor();
 
+    let eth_addr = Address::new_delegated(
+        10,
+        &string_to_ETHAddress(String::from("0x443c0c6F6Cb301B49eE5E9Be07B867378e73Fb54")).0,
+    )
+    .unwrap();
+    mock.mock_embryo_address_actor(eth_addr, TokenAmount::zero());
+
     // An empty built-in actors manifest.
     // let manifest_cid = { store.put_cbor(&Manifest::DUMMY_CODES, Code::Blake2b256).unwrap() };
     // let actors_cid = store.put_cbor(&(1, manifest_cid), Code::Blake2b256).unwrap();
 
     let vm = test_vm::VM::new(&store);
     vm.state_root.replace(mock.state_root.into_inner());
-    let init_actor = vm.get_actor(SYSTEM_ACTOR_ADDR).unwrap();
+
+    let init_actor = vm.get_actor(INIT_ACTOR_ADDR).unwrap();
     println!("init_actor: {:?}", init_actor);
+
+    let system_actor = vm.get_actor(SYSTEM_ACTOR_ADDR).unwrap();
+    println!("system_actor: {:?}", system_actor);
+
+    // create a faucet with 1 billion FIL for setting up test accounts
+    let faucet_total = TokenAmount::from_whole(1_000_000_000i64);
+    let faucet_addr = Address::new_bls(FAUCET_ROOT_KEY).unwrap();
+    apply_ok(&vm, SYSTEM_ACTOR_ADDR, faucet_addr, faucet_total, METHOD_SEND, RawBytes::default());
+
+    let send_amount = TokenAmount::from_whole(1);
+    apply_ok(&vm, faucet_addr, eth_addr, send_amount.clone(), METHOD_SEND, RawBytes::default());
+
+    assert_eq!(
+        send_amount.clone(),
+        vm.get_actor(vm.normalize_address(&eth_addr).unwrap()).unwrap().balance
+    );
 }
 
 #[test]
