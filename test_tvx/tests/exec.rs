@@ -15,8 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_tuple::*;
 use std::cell::RefCell;
 use std::{env, fs};
-use test_tvx::mock_single_actors::Actor;
-use test_tvx::mock_single_actors::{mock_init_actor, mock_system_actor};
+use test_tvx::mock_single_actors::Mock;
 use test_tvx::util::create_account;
 use test_tvx::{
     string_to_ETHAddress, string_to_U256, string_to_bytes, EvmContractInput, FAUCET_ROOT_KEY, VM,
@@ -212,18 +211,16 @@ fn exec_contract_2() {
 #[test]
 fn mock_single_actor_blockstore() {
     let store = MemoryBlockstore::new();
+    let mut mock = Mock::new(&store);
+    mock.mock_system_actor();
+    mock.mock_init_actor();
 
     // An empty built-in actors manifest.
     // let manifest_cid = { store.put_cbor(&Manifest::DUMMY_CODES, Code::Blake2b256).unwrap() };
     // let actors_cid = store.put_cbor(&(1, manifest_cid), Code::Blake2b256).unwrap();
 
-    let mut actors = Hamt::<&MemoryBlockstore, Actor, BytesKey, Sha256>::new(&store);
-    let mut state_root = actors.flush().unwrap();
-    state_root = mock_system_actor(state_root, &store);
-    state_root = mock_init_actor(state_root, &store);
-
     let vm = test_vm::VM::new(&store);
-    vm.state_root.replace(state_root);
+    vm.state_root.replace(mock.state_root.into_inner());
     let init_actor = vm.get_actor(SYSTEM_ACTOR_ADDR).unwrap();
     println!("init_actor: {:?}", init_actor);
 }
