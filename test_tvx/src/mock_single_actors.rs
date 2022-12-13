@@ -14,6 +14,8 @@ use fvm_ipld_encoding::{tuple::*, Cbor, CborStore};
 use fvm_ipld_hamt::{BytesKey, Hamt, Sha256};
 use fvm_shared::{address::Address, econ::TokenAmount, ActorID};
 use multihash::Code;
+use fil_actors_runtime::runtime::builtins::Type;
+use fil_actors_runtime::test_utils::{ACTOR_CODES, EAM_ACTOR_CODE_ID};
 
 #[derive(Serialize_tuple, Deserialize_tuple, Clone, PartialEq, Eq, Debug)]
 pub struct Actor {
@@ -81,6 +83,19 @@ where
         self.set_actor(
             id_addr,
             actor(*EMBRYO_ACTOR_CODE_ID, EMPTY_ARR_CID, 0, balance, Some(addr)),
+        );
+    }
+
+    pub fn mock_eth_address_actor(&mut self, addr: Address, balance: TokenAmount) {
+        let mut id_addr = Address::new_id(0);
+        let robust_address = Address::new_actor(&addr.to_bytes());
+        self.mutate_state(INIT_ACTOR_ADDR, |st: &mut InitState| {
+            let addr_id = st.map_address_to_f4(self.store, &robust_address, &addr).unwrap();
+            id_addr = Address::new_id(addr_id);
+        });
+        self.set_actor(
+            id_addr,
+            actor(ACTOR_CODES.get(&Type::EVM).cloned().unwrap(), EMPTY_ARR_CID, 0, balance, Some(addr)),
         );
     }
 
