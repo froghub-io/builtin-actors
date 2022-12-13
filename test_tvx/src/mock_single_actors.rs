@@ -5,13 +5,15 @@ use fil_actor_eam::EthAddress;
 use fil_actor_init::State as InitState;
 use fil_actor_system::State as SystemState;
 use fil_actors_runtime::{
-    test_utils::{INIT_ACTOR_CODE_ID, SYSTEM_ACTOR_CODE_ID},
+    runtime::EMPTY_ARR_CID,
+    test_utils::{EMBRYO_ACTOR_CODE_ID, INIT_ACTOR_CODE_ID, SYSTEM_ACTOR_CODE_ID},
     INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR,
 };
 use fvm_ipld_blockstore::{Blockstore, MemoryBlockstore};
-use fvm_ipld_encoding::{tuple::*, CborStore};
+use fvm_ipld_encoding::{tuple::*, Cbor, CborStore};
 use fvm_ipld_hamt::{BytesKey, Hamt, Sha256};
-use fvm_shared::{address::Address, econ::TokenAmount};
+use fvm_shared::{address::Address, econ::TokenAmount, ActorID};
+use multihash::Code;
 
 #[derive(Serialize_tuple, Deserialize_tuple, Clone, PartialEq, Eq, Debug)]
 pub struct Actor {
@@ -70,6 +72,34 @@ where
         );
     }
 
+    pub fn mock_embryo_address_actor(&mut self, addr: Address, balance: TokenAmount) -> () {
+        let mut id_addr = Address::new_id(0);
+        self.mutate_state(INIT_ACTOR_ADDR, |st: &mut InitState| {
+            let addr_id = st.map_address_to_new_id(self.store, &addr).unwrap();
+            id_addr = Address::new_id(addr_id);
+        });
+        self.set_actor(
+            id_addr,
+            actor(*EMBRYO_ACTOR_CODE_ID, EMPTY_ARR_CID, 0, balance, Some(addr)),
+        );
+    }
+
+    pub fn put_store<S>(&self, obj: &S) -> Cid
+    where
+        S: serde::ser::Serialize,
+    {
+        self.store.put_cbor(obj, Code::Blake2b256).unwrap()
+    }
+
+    pub fn get_state<C: Cbor>(&self, addr: Address) -> Option<C> {
+        let a_opt = self.get_actor(addr);
+        if a_opt == None {
+            return None;
+        };
+        let a = a_opt.unwrap();
+        self.store.get_cbor::<C>(&a.head).unwrap()
+    }
+
     pub fn set_actor(&mut self, actor_addr: Address, actor: Actor) -> () {
         let mut actors =
             Hamt::<&BS, Actor, BytesKey, Sha256>::load(&self.state_root.borrow(), self.store)
@@ -77,13 +107,23 @@ where
         actors.set(actor_addr.to_bytes().into(), actor).unwrap();
         self.state_root.replace(actors.flush().unwrap());
     }
-}
 
-// pub fn mock_eth_address_actor<BS: Blockstore>(
-//     state_root: Cid,
-//     store: &BS,
-//     eth_addr: EthAddress,
-//     balance: TokenAmount,
-// ) -> Cid {
-//     let addr = Address::new_delegated(10, &eth_addr.0)
-// }
+    pub fn get_actor(&self, addr: Address) -> Option<Actor> {
+        let actors =
+            Hamt::<&BS, Actor, BytesKey, Sha256>::load(&self.state_root.borrow(), self.store)
+                .unwrap();
+        actors.get(&addr.to_bytes()).unwrap().cloned()
+    }
+
+    pub fn mutate_state<C, F>(&mut self, addr: Address, f: F)
+    where
+        C: Cbor,
+        F: FnOnce(&mut C),
+    {
+        let mut a = self.get_actor(addr).unwrap();
+        let mut st = self.store.get_cbor::<C>(&a.head).unwrap().unwrap();
+        f(&mut st);
+        a.head = self.store.put_cbor(&st, Code::Blake2b256).unwrap();
+        self.set_actor(addr, a);
+    }
+}
