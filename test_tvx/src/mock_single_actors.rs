@@ -1,21 +1,23 @@
 use std::cell::RefCell;
+use std::collections::HashMap;
 
 use cid::Cid;
 use fil_actor_eam::EthAddress;
 use fil_actor_init::State as InitState;
 use fil_actor_system::State as SystemState;
-use fil_actors_runtime::{
-    runtime::EMPTY_ARR_CID,
-    test_utils::{EMBRYO_ACTOR_CODE_ID, INIT_ACTOR_CODE_ID, SYSTEM_ACTOR_CODE_ID},
-    INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR,
-};
-use fvm_ipld_blockstore::{Blockstore, MemoryBlockstore};
+use fil_actors_runtime::{runtime::EMPTY_ARR_CID, test_utils::{EMBRYO_ACTOR_CODE_ID, INIT_ACTOR_CODE_ID, SYSTEM_ACTOR_CODE_ID}, INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR, AsActorError};
+use fvm_ipld_blockstore::{Block, Blockstore, MemoryBlockstore};
 use fvm_ipld_encoding::{tuple::*, Cbor, CborStore};
 use fvm_ipld_hamt::{BytesKey, Hamt, Sha256};
-use fvm_shared::{address::Address, econ::TokenAmount, ActorID};
+use fvm_shared::{address::Address, econ::TokenAmount, ActorID, IPLD_RAW};
+use fvm_shared::error::ExitCode;
 use multihash::Code;
+use fil_actor_evm::interpreter::{StatusCode, U256};
+use fil_actor_evm::interpreter::system::StorageStatus;
+use fil_actor_evm::state::State;
 use fil_actors_runtime::runtime::builtins::Type;
 use fil_actors_runtime::test_utils::{ACTOR_CODES, EAM_ACTOR_CODE_ID};
+use crate::{EvmContractState, string_to_bytes, string_to_U256, U256_to_bytes};
 
 #[derive(Serialize_tuple, Deserialize_tuple, Clone, PartialEq, Eq, Debug)]
 pub struct Actor {
@@ -86,7 +88,7 @@ where
         );
     }
 
-    pub fn mock_eth_address_actor(&mut self, addr: Address, balance: TokenAmount) {
+    pub fn mock_evm_actor(&mut self, addr: Address, balance: TokenAmount) {
         let mut id_addr = Address::new_id(0);
         let robust_address = Address::new_actor(&addr.to_bytes());
         self.mutate_state(INIT_ACTOR_ADDR, |st: &mut InitState| {
@@ -97,6 +99,83 @@ where
             id_addr,
             actor(ACTOR_CODES.get(&Type::EVM).cloned().unwrap(), EMPTY_ARR_CID, 0, balance, Some(addr)),
         );
+    }
+
+    pub fn mock_init_evm_actor_state(&mut self, addr: Address, storage: HashMap<U256, U256>, bytecode: Vec<u8>) {
+        let store  = self.store.clone();
+        let mut slots = Hamt::<_, U256, U256>::new(store);
+        for (key, value) in storage{
+            let mut key_bytes = [0u8; 32];
+            key.to_big_endian(&mut key_bytes);
+            slots.set(key, value).map_err(|e| StatusCode::InternalError(e.to_string())).unwrap();
+        }
+        let bytecode_cid = self.store
+            .put(Code::Blake2b256, &Block::new(IPLD_RAW, bytecode))
+            .context_code(ExitCode::USR_ILLEGAL_STATE, "failed to write bytecode").unwrap();
+
+        let new_root = self.store
+            .put_cbor(
+                &State {
+                    bytecode: bytecode_cid,
+                    contract_state: slots.flush().context_code(
+                        ExitCode::USR_ILLEGAL_STATE,
+                        "failed to flush contract state",
+                    ).unwrap(),
+                    nonce: 1,
+                },
+                Code::Blake2b256,
+            )
+            .context_code(ExitCode::USR_ILLEGAL_STATE, "failed to write contract state").unwrap();
+
+        let addr = self.normalize_address(&addr).unwrap();
+        let mut a = self.get_actor(addr).unwrap();
+        a.head = new_root;
+        self.set_actor(addr, a);
+    }
+
+    pub fn modify_evm_actor_state(&mut self, addr: Address, storage: HashMap<U256, U256>) {
+        let addr = self.normalize_address(&addr).unwrap();
+        let state_root = self.get_actor(addr).unwrap().head;
+        let state: State = self.store
+            .get_cbor(&state_root)
+            .context_code(ExitCode::USR_SERIALIZATION, "failed to decode state").unwrap()
+            .context_code(ExitCode::USR_ILLEGAL_STATE, "state not in blockstore").unwrap();
+
+        let mut slots = Hamt::<_, U256, U256>::load(&state.contract_state, self.store)
+            .context_code(ExitCode::USR_ILLEGAL_STATE, "state not in blockstore").unwrap();
+
+        let mut unchanged = true;
+        for (key, value) in storage {
+            let mut key_bytes = [0u8; 32];
+            key.to_big_endian(&mut key_bytes);
+
+            let prev_value = slots.get(&key).map_err(|e| StatusCode::InternalError(e.to_string())).unwrap().cloned();
+            if prev_value == Some(value) {
+                continue
+            }
+            unchanged = false;
+            slots.set(key, value).map_err(|e| StatusCode::InternalError(e.to_string())).unwrap();
+        }
+        if unchanged {
+            return;
+        }
+        let new_root = self.store
+            .put_cbor(
+                &State {
+                    bytecode: state.bytecode,
+                    contract_state: slots.flush().context_code(
+                        ExitCode::USR_ILLEGAL_STATE,
+                        "failed to flush contract state",
+                    ).unwrap(),
+                    nonce: state.nonce,
+                },
+                Code::Blake2b256,
+            )
+            .context_code(ExitCode::USR_ILLEGAL_STATE, "failed to write contract state").unwrap();
+
+        let mut a = self.get_actor(addr).unwrap();
+        a.head = new_root;
+        self.set_actor(addr, a);
     }
 
     pub fn put_store<S>(&self, obj: &S) -> Cid
@@ -129,6 +208,41 @@ where
                 .unwrap();
         actors.get(&addr.to_bytes()).unwrap().cloned()
     }
+
+    pub fn normalize_address(&self, addr: &Address) -> Option<Address> {
+        let st = self.get_state::<InitState>(INIT_ACTOR_ADDR).unwrap();
+        st.resolve_address::<BS>(self.store, addr).unwrap()
+    }
+
+    pub fn print_actor_evm_state(&self, addr: Address) {
+        let addr = self.normalize_address(&addr).unwrap();
+        let state_root = self.get_actor(addr).unwrap().head;
+        let store = self.store.clone();
+        let state: State = store
+            .get_cbor(&state_root)
+            .context_code(ExitCode::USR_SERIALIZATION, "failed to decode state")
+            .unwrap()
+            .context_code(ExitCode::USR_ILLEGAL_STATE, "state not in blockstore")
+            .unwrap();
+        let slots = Hamt::<_, U256, U256>::load(&state.contract_state, store)
+            .context_code(ExitCode::USR_ILLEGAL_STATE, "state not in blockstore")
+            .unwrap();
+        slots
+            .for_each(|k, v| {
+                println!("--k: {:?}", hex::encode(U256_to_bytes(k.clone())));
+                println!("--v: {:?}", hex::encode(U256_to_bytes(v.clone())));
+                Ok(())
+            })
+            .unwrap();
+
+        let bytecode = self.store
+            .get(&state.bytecode)
+            .context_code(ExitCode::USR_NOT_FOUND, "failed to read bytecode").unwrap()
+            .expect("bytecode not in state tree");
+        println!("bytecode: {:?}", hex::encode(bytecode));
+    }
+
+
 
     pub fn mutate_state<C, F>(&mut self, addr: Address, f: F)
     where

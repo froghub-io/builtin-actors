@@ -1213,8 +1213,8 @@ impl Primitives for VM<'_> {
 
     fn hash_64(&self, hasher: SupportedHashes, data: &[u8]) -> ([u8; 64], usize) {
         let hasher = Code::try_from(hasher as u64).unwrap();
-        let (len, buf, ..) = hasher.digest(data).into_inner();
-        (buf, len as usize)
+        let (_, digest, written) = hasher.digest(data).into_inner();
+        (digest, written as usize)
     }
 
     fn recover_secp_public_key(
