@@ -3,7 +3,7 @@ use fil_actor_eam::{EthAddress, EvmConstructorParams, RlpCreateAddress};
 use fil_actor_init::ExecReturn;
 use fil_actors_runtime::test_utils::MULTISIG_ACTOR_CODE_ID;
 use fil_actors_runtime::{
-    cbor, EAM_ACTOR_ADDR, INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR, SYSTEM_ACTOR_ID,
+    cbor, EAM_ACTOR_ADDR, EAM_ACTOR_ID, INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR, SYSTEM_ACTOR_ID,
 };
 // use fvm::machine::Manifest;
 use fvm_ipld_blockstore::MemoryBlockstore;
@@ -184,7 +184,7 @@ fn mock_single_actor_blockstore() {
     mock.mock_init_actor();
 
     let eth_addr = Address::new_delegated(
-        10,
+        EAM_ACTOR_ID,
         &string_to_ETHAddress(String::from("0x443c0c6F6Cb301B49eE5E9Be07B867378e73Fb54")).0,
     ).unwrap();
     mock.mock_embryo_address_actor(eth_addr, TokenAmount::zero());
