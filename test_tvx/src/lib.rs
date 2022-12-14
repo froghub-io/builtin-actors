@@ -75,6 +75,7 @@ use std::ops::Add;
 use std::{fmt, iter};
 
 pub mod mock_single_actors;
+pub mod tracing_blockstore;
 pub mod util;
 
 pub struct VM<'bs> {
@@ -1770,4 +1771,3 @@ pub struct ValueType {
     pub v_type: String,
     pub hex: String,
 }
-

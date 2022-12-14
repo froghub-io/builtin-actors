@@ -1,3 +1,9 @@
+use async_std::channel::bounded;
+use async_std::io::BufReader;
+use async_std::io::Cursor;
+use async_std::sync::RwLock;
+use bytes::BufMut;
+use cid::Cid;
 use fil_actor_eam as eam;
 use fil_actor_eam::{EvmConstructorParams, RlpCreateAddress};
 use fil_actor_evm::interpreter::address::EthAddress;
@@ -7,7 +13,9 @@ use fil_actors_runtime::{
     cbor, EAM_ACTOR_ADDR, EAM_ACTOR_ID, INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR, SYSTEM_ACTOR_ID,
 };
 // use fvm::machine::Manifest;
+use fvm_ipld_blockstore::Blockstore;
 use fvm_ipld_blockstore::MemoryBlockstore;
+use fvm_ipld_car::{load_car, CarHeader};
 use fvm_ipld_encoding::{strict_bytes, BytesDe, Cbor, CborStore, RawBytes};
 use fvm_ipld_hamt::{BytesKey, Hamt, Sha256};
 use fvm_shared::address::Address;
@@ -19,8 +27,11 @@ use rlp::Encodable;
 use serde::{Deserialize, Serialize};
 use serde_tuple::*;
 use std::cell::RefCell;
+use std::collections::HashMap;
+use std::sync::Arc;
 use std::{env, fs};
 use test_tvx::mock_single_actors::Mock;
+use test_tvx::tracing_blockstore::TracingBlockStore;
 use test_tvx::util::create_account;
 use test_tvx::{
     string_to_ETHAddress, string_to_U256, string_to_bytes, EvmContractInput, FAUCET_ROOT_KEY, VM,
@@ -215,9 +226,9 @@ fn exec_contract_2() {
     }
 }
 
-#[test]
-fn mock_single_actor_blockstore() {
-    let store = MemoryBlockstore::new();
+#[async_std::test]
+async fn mock_single_actor_blockstore() {
+    let store = TracingBlockStore::new(MemoryBlockstore::new());
     let mut mock = Mock::new(&store);
     mock.mock_system_actor();
     mock.mock_init_actor();
@@ -229,11 +240,37 @@ fn mock_single_actor_blockstore() {
     .unwrap();
     mock.mock_embryo_address_actor(eth_addr, TokenAmount::zero());
 
+    let (tx, mut rx) = bounded(100);
+
+    let state_root = mock.state_root.borrow().clone();
+    let car_header = CarHeader::new(vec![state_root], 1);
+    let buffer: Arc<RwLock<Vec<u8>>> = Default::default();
+    let buffer_cloned = buffer.clone();
+    let write_task = async_std::task::spawn(async move {
+        car_header.write_stream_async(&mut *buffer_cloned.write().await, &mut rx).await.unwrap()
+    });
+
+    for cid in (&store).traced.borrow().iter() {
+        tx.send((cid.clone(), store.base.get(cid).unwrap().unwrap())).await.unwrap();
+    }
+
+    drop(tx);
+    write_task.await;
+
+    let car_bytes = buffer.read().await.clone();
+    println!("car_bytes: {:?}", car_bytes);
+
+    let test_store = MemoryBlockstore::new();
+
+    let car_reader = Cursor::new(car_bytes);
+    load_car(&test_store, car_reader).await.unwrap();
+
     // An empty built-in actors manifest.
     // let manifest_cid = { store.put_cbor(&Manifest::DUMMY_CODES, Code::Blake2b256).unwrap() };
     // let actors_cid = store.put_cbor(&(1, manifest_cid), Code::Blake2b256).unwrap();
 
-    let vm = test_vm::VM::new(&store);
+    // let vm = test_vm::VM::new(&store.base);
+    let vm = test_vm::VM::new(&test_store);
     vm.state_root.replace(mock.state_root.into_inner());
 
     let init_actor = vm.get_actor(INIT_ACTOR_ADDR).unwrap();

@@ -55,6 +55,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "async-attributes"
+version = "1.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a3203e79f4dd9bdda415ed03cf14dae5a2bf775c683a00f94e9cd1faf0f596e5"
+dependencies = [
+ "quote",
+ "syn",
+]
+
+[[package]]
 name = "async-channel"
 version = "1.7.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -129,6 +139,7 @@ version = "1.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "62565bb4402e926b29953c785397c6dc0391b7b446e45008b0049eb43cec6f5d"
 dependencies = [
+ "async-attributes",
  "async-channel",
  "async-global-executor",
  "async-io",
@@ -3712,6 +3723,7 @@ name = "test_tvx"
 version = "10.0.0-alpha.1"
 dependencies = [
  "anyhow",
+ "async-std",
  "bimap",
  "blake2b_simd",
  "bytes",
@@ -3736,6 +3748,7 @@ dependencies = [
  "frc46_token",
  "fvm_ipld_bitfield",
  "fvm_ipld_blockstore",
+ "fvm_ipld_car",
  "fvm_ipld_encoding",
  "fvm_ipld_hamt",
  "fvm_shared",
@@ -3757,6 +3770,7 @@ dependencies = [
  "test-case",
  "test_vm",
  "thiserror",
+ "tokio-stream",
 ]
 
 [[package]]
@@ -3882,6 +3896,17 @@ dependencies = [
  "rustls",
  "tokio",
  "webpki",
+]
+
+[[package]]
+name = "tokio-stream"
+version = "0.1.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d660770404473ccd7bc9f8b28494a811bc18542b915c0855c51e8f419d5223ce"
+dependencies = [
+ "futures-core",
+ "pin-project-lite",
+ "tokio",
 ]
 
 [[package]]
