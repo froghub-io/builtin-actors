@@ -45,7 +45,7 @@ use fvm_ipld_encoding::tuple::*;
 use fvm_ipld_encoding::{Cbor, CborStore, RawBytes};
 use fvm_ipld_hamt::{BytesKey, Hamt, Sha256};
 use fvm_shared::address::{Address, Payload};
-use fvm_shared::bigint::{Integer, Zero};
+use fvm_shared::bigint::{BigInt, Integer, Zero};
 use fvm_shared::clock::ChainEpoch;
 use fvm_shared::consensus::ConsensusFault;
 use fvm_shared::crypto::hash::SupportedHashes;
@@ -73,6 +73,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::ops::Add;
 use std::{fmt, iter};
+use std::str::FromStr;
 
 pub mod mock_single_actors;
 pub mod tracing_blockstore;
@@ -1691,6 +1692,30 @@ pub fn string_to_ETHAddress(str: String) -> EthAddress {
     let mut r = [0u8; 20];
     r[20 - v.len()..20].copy_from_slice(&v);
     EthAddress(r)
+}
+
+pub fn string_to_big_int(str: String) -> BigInt {
+    let v = if str.starts_with("0x") {
+        let str = &str[2..str.len()];
+        hex::decode(if str.len().is_odd() {
+            let mut s = String::from("0");
+            s.push_str(str);
+            s
+        } else {
+            str.to_string()
+        })
+            .unwrap()
+    } else {
+        hex::decode(if str.len().is_odd() {
+            let mut s = String::from("0");
+            s.push_str(&str);
+            s
+        } else {
+            str.to_string()
+        })
+            .unwrap()
+    };
+    BigInt::from_str(&*hex::encode(v)).unwrap()
 }
 
 pub fn string_to_bytes(str: String) -> Vec<u8> {

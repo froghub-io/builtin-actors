@@ -5,19 +5,21 @@ use cid::Cid;
 use fil_actor_eam::EthAddress;
 use fil_actor_init::State as InitState;
 use fil_actor_system::State as SystemState;
-use fil_actors_runtime::{runtime::EMPTY_ARR_CID, test_utils::{EMBRYO_ACTOR_CODE_ID, INIT_ACTOR_CODE_ID, SYSTEM_ACTOR_CODE_ID}, INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR, AsActorError};
+use fil_actors_runtime::{runtime::EMPTY_ARR_CID, test_utils::{EMBRYO_ACTOR_CODE_ID, INIT_ACTOR_CODE_ID, SYSTEM_ACTOR_CODE_ID}, INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR, AsActorError, cbor};
 use fvm_ipld_blockstore::{Block, Blockstore, MemoryBlockstore};
-use fvm_ipld_encoding::{tuple::*, Cbor, CborStore};
+use fvm_ipld_encoding::{tuple::*, Cbor, CborStore, RawBytes};
 use fvm_ipld_hamt::{BytesKey, Hamt, Sha256};
-use fvm_shared::{address::Address, econ::TokenAmount, ActorID, IPLD_RAW};
+use fvm_shared::{address::Address, econ::TokenAmount, ActorID, IPLD_RAW, MethodNum, METHOD_SEND};
 use fvm_shared::error::ExitCode;
+use fvm_shared::message::Message;
 use multihash::Code;
 use fil_actor_evm::interpreter::{StatusCode, U256};
 use fil_actor_evm::interpreter::system::StorageStatus;
 use fil_actor_evm::state::State;
 use fil_actors_runtime::runtime::builtins::Type;
 use fil_actors_runtime::test_utils::{ACTOR_CODES, EAM_ACTOR_CODE_ID};
-use crate::{EvmContractState, string_to_bytes, string_to_U256, U256_to_bytes};
+use crate::{EvmContractContext, EvmContractState, string_to_big_int, string_to_bytes, string_to_ETHAddress, string_to_U256, U256_to_bytes};
+use serde::{Deserialize, Serialize};
 
 #[derive(Serialize_tuple, Deserialize_tuple, Clone, PartialEq, Eq, Debug)]
 pub struct Actor {
@@ -243,6 +245,43 @@ where
     }
 
 
+    pub fn to_message(context: EvmContractContext) -> Option<Message> {
+        let from = Address::new_delegated(10, &string_to_ETHAddress(context.from).0).unwrap();
+        let mut to: Address;
+        let mut method_num: MethodNum;
+        let mut params = RawBytes::serialize(ContractParams(vec![0u8; 0])).unwrap();
+        if string_to_ETHAddress(String::from("0x00")).eq(&string_to_ETHAddress(context.to.clone())){
+            to = Address::new_id(10);
+            method_num = fil_actor_eam::Method::Create as u64;
+            let params2 = fil_actor_eam::CreateParams {
+                initcode: string_to_bytes(context.input),
+                nonce: context.nonce
+            };
+            params = RawBytes::serialize(params2).unwrap();
+            return None
+        } else {
+            to = Address::new_delegated(10, &string_to_ETHAddress(context.to).0).unwrap();
+            if context.input.len() > 0 {
+                params = RawBytes::serialize(ContractParams(string_to_bytes(context.input))).unwrap();
+                method_num = fil_actor_evm::Method::InvokeContract as u64
+            } else {
+                method_num = METHOD_SEND;
+            }
+        }
+        let msg = Message {
+            version: 0,
+            from,
+            to,
+            sequence: context.nonce,
+            value: TokenAmount::from_atto(string_to_big_int(context.value.hex)),
+            method_num,
+            params,
+            gas_limit: 9999,
+            gas_fee_cap: TokenAmount::from_nano(0),
+            gas_premium: TokenAmount::from_nano(0),
+        };
+        Some(msg)
+    }
 
     pub fn mutate_state<C, F>(&mut self, addr: Address, f: F)
     where
@@ -256,3 +295,9 @@ where
         self.set_actor(addr, a);
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+struct ContractParams(#[serde(with = "strict_bytes")] pub Vec<u8>);
+
+impl Cbor for ContractParams {}
