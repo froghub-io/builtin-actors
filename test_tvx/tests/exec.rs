@@ -2,6 +2,7 @@ use async_std::channel::bounded;
 use async_std::io::BufReader;
 use async_std::io::Cursor;
 use async_std::sync::RwLock;
+use bytes::Buf;
 use bytes::BufMut;
 use cid::Cid;
 use fil_actor_eam as eam;
@@ -11,7 +12,10 @@ use fil_actors_runtime::test_utils::MULTISIG_ACTOR_CODE_ID;
 use fil_actors_runtime::{
     cbor, EAM_ACTOR_ADDR, EAM_ACTOR_ID, INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR, SYSTEM_ACTOR_ID,
 };
+use flate2::Compression;
 // use fvm::machine::Manifest;
+use flate2::bufread::GzDecoder;
+use flate2::bufread::GzEncoder;
 use fvm_ipld_blockstore::Blockstore;
 use fvm_ipld_blockstore::MemoryBlockstore;
 use fvm_ipld_car::{load_car, CarHeader};
@@ -26,7 +30,7 @@ use rlp::Encodable;
 use serde::{Deserialize, Serialize};
 use serde_tuple::*;
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::io::Read;
 use std::sync::Arc;
 use std::{env, fs};
 use std::collections::HashMap;
@@ -220,9 +224,17 @@ async fn mock_single_actor_blockstore() {
     let car_bytes = buffer.read().await.clone();
     println!("car_bytes: {:?}", car_bytes);
 
-    let test_store = MemoryBlockstore::new();
+    let mut gz_car_bytes: Vec<u8> = Default::default();
+    let mut gz_encoder = GzEncoder::new(car_bytes.reader(), Compression::new(9));
+    gz_encoder.read_to_end(&mut gz_car_bytes).unwrap();
+
+    let mut gz_decoder = GzDecoder::new(gz_car_bytes.as_slice());
+
+    let mut car_bytes: Vec<u8> = Default::default();
+    gz_decoder.read_to_end(&mut car_bytes).unwrap();
 
     let car_reader = Cursor::new(car_bytes);
+    let test_store = MemoryBlockstore::new();
     load_car(&test_store, car_reader).await.unwrap();
 
     // An empty built-in actors manifest.
