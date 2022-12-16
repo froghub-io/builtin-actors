@@ -22,7 +22,10 @@ use async_std::sync::RwLock;
 use fvm_ipld_car::CarHeader;
 use bytes::Buf;
 use cid::Cid;
+use fvm_ipld_encoding::RawBytes;
+use fvm_shared::error::ExitCode;
 use fvm_shared::message::Message;
+use fvm_shared::receipt::Receipt;
 use crate::mock_single_actors::Mock;
 use crate::tracing_blockstore::TracingBlockStore;
 
@@ -31,7 +34,7 @@ pub mod tracing_blockstore;
 mod util;
 
 
-pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Vec<u8>) {
+pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Receipt, Vec<u8>) {
     let store = TracingBlockStore::new(MemoryBlockstore::new());
     let mut mock = Mock::new(&store);
     mock.mock_builtin_actor();
@@ -93,9 +96,18 @@ pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Vec<u8>) {
     let post_state_root = mock.get_state_root();
     println!("post_state_root: {:?}", post_state_root);
 
-    let message = mock.to_message(input.context);
+    let message = mock.to_message(&input.context);
 
     println!("message: {:?}", message);
+
+    let receipt = Receipt {
+        exit_code: ExitCode::OK,
+        return_data: RawBytes::serialize(hex::decode(&input.context.return_result).unwrap()).unwrap(),
+        gas_used: 0,
+        events_root: None,
+    };
+
+    println!("receipt: {:?}", receipt);
 
     let (tx, mut rx) = bounded(100);
     let state_root = mock.get_state_root();
@@ -126,7 +138,7 @@ pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Vec<u8>) {
 
     println!("gz_car_bytes: {:?}", gz_car_bytes);
 
-    (pre_state_root, post_state_root, message, gz_car_bytes)
+    (pre_state_root, post_state_root, message, receipt, gz_car_bytes)
 
 }
 

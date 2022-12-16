@@ -340,7 +340,7 @@ where
         st.resolve_address::<BS>(self.store, addr).unwrap()
     }
 
-    pub fn to_message(&self, context: EvmContractContext) -> Message {
+    pub fn to_message(&self, context: &EvmContractContext) -> Message {
         let from = Address::new_delegated(10, &string_to_eth_address(&context.from).0).unwrap();
         let to: Address;
         let method_num: MethodNum;
@@ -394,3 +394,9 @@ where
 struct ContractParams(#[serde(with = "strict_bytes")] pub Vec<u8>);
 
 impl Cbor for ContractParams {}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+struct ReturnData(#[serde(with = "strict_bytes")] pub Vec<u8>);
+
+impl Cbor for ReturnData {}
