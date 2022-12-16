@@ -1,7 +1,6 @@
 use anyhow::anyhow;
 use bimap::BiBTreeMap;
 use cid::multihash::Code;
-use cid::multihash::MultihashDigest;
 use cid::Cid;
 use fil_actor_account::{Actor as AccountActor, State as AccountState};
 use fil_actor_cron::{Actor as CronActor, Entry as CronEntry, State as CronState};
@@ -18,7 +17,7 @@ use fil_actor_power::{Actor as PowerActor, Method as MethodPower, State as Power
 use fil_actor_reward::{Actor as RewardActor, State as RewardState};
 use fil_actor_system::{Actor as SystemActor, State as SystemState};
 use fil_actor_verifreg::{Actor as VerifregActor, State as VerifRegState};
-use fil_actors_runtime::actor_error;
+use fil_actors_runtime::{actor_error, test_utils};
 use fil_actors_runtime::cbor::serialize;
 use fil_actors_runtime::runtime::builtins::Type;
 use fil_actors_runtime::runtime::{
@@ -1207,14 +1206,12 @@ impl Primitives for VM<'_> {
     }
 
     fn hash(&self, hasher: SupportedHashes, data: &[u8]) -> Vec<u8> {
-        let hasher = Code::try_from(hasher as u64).unwrap(); // supported hashes are all implemented in multihash
-        hasher.digest(data).to_bytes()
+        let (digest, len) = test_utils::hash(hasher, data);
+        Vec::from(&digest[..len])
     }
 
     fn hash_64(&self, hasher: SupportedHashes, data: &[u8]) -> ([u8; 64], usize) {
-        let hasher = Code::try_from(hasher as u64).unwrap();
-        let (_, digest, written) = hasher.digest(data).into_inner();
-        (digest, written as usize)
+        test_utils::hash(hasher, data)
     }
 
     fn recover_secp_public_key(

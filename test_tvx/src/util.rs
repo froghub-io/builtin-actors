@@ -1,12 +1,12 @@
 use std::cmp::min;
 
-use anyhow::Context;
+use anyhow::{anyhow, Context};
 use async_std::task::block_on;
 use frc46_token::receiver::types::{FRC46TokenReceived, UniversalReceiverParams, FRC46_TOKEN_TYPE};
 use frc46_token::token::types::{BurnParams, TransferFromParams, TransferParams};
 use fvm_ipld_bitfield::BitField;
 use fvm_ipld_car::load_car_unchecked;
-use fvm_ipld_encoding::{BytesDe, Cbor, RawBytes};
+use fvm_ipld_encoding::{BytesDe, Cbor, CborStore, RawBytes};
 use fvm_shared::address::{Address, BLS_PUB_LEN};
 use fvm_shared::crypto::signature::{Signature, SignatureType};
 use fvm_shared::deal::DealID;
@@ -15,6 +15,7 @@ use fvm_shared::error::ExitCode;
 use fvm_shared::piece::PaddedPieceSize;
 use fvm_shared::sector::{PoStProof, RegisteredPoStProof, RegisteredSealProof, SectorNumber};
 use fvm_shared::{MethodNum, METHOD_SEND};
+use fvm_shared::version::NetworkVersion;
 use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 
@@ -44,8 +45,7 @@ use fil_actor_power::{
     CreateMinerParams, CreateMinerReturn, Method as PowerMethod, UpdateClaimedPowerParams,
 };
 use fil_actor_reward::Method as RewardMethod;
-use fil_actor_verifreg::{
-    AddVerifierClientParams, AllocationID, ClaimID, ClaimTerm, ExtendClaimTermsParams,
+use fil_actor_verifreg::{AllocationID, ClaimID, ClaimTerm, ExtendClaimTermsParams,
     GetClaimsParams, Method as VerifregMethod, RemoveExpiredAllocationsParams, VerifierParams,
 };
 use fil_actors_runtime::cbor::deserialize;
@@ -56,24 +56,7 @@ use fil_actors_runtime::runtime::policy_constants::{
 use crate::*;
 use fil_actors_runtime::runtime::builtins::Type;
 
-pub fn create_account(v: &VM, eth_addr: EthAddress) -> Address {
-    let addr = Address::new_delegated(10, &eth_addr.0).unwrap();
-    assert!(v
-        .apply_message(
-            TEST_FAUCET_ADDR,
-            addr,
-            TokenAmount::from_atto(42u8),
-            METHOD_SEND,
-            RawBytes::default(),
-        )
-        .unwrap()
-        .code
-        .is_success());
-    let account = v.normalize_address(&addr).unwrap();
-    return account;
-}
-
-fn get_code_cid_map() -> anyhow::Result<HashMap<u32, Cid>> {
+pub fn get_code_cid_map() -> anyhow::Result<HashMap<u32, Cid>> {
     let bs = MemoryBlockstore::new();
     let actor_v10_bundle = (NetworkVersion::V18, actors_v10::BUNDLE_CAR);
     let roots = block_on(async { load_car_unchecked(&bs, actor_v10_bundle.1).await.unwrap() });
@@ -118,7 +101,6 @@ fn get_code_cid_map() -> anyhow::Result<HashMap<u32, Cid>> {
 //     Ok(by_id)
 // }
 
-pub fn construction(v: &VM, input: EvmContractInput) {}
 
 #[test]
 fn test_get_code_cid_map() {

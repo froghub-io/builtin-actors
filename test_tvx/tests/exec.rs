@@ -1,48 +1,34 @@
 use async_std::channel::bounded;
-use async_std::io::BufReader;
 use async_std::io::Cursor;
 use async_std::sync::RwLock;
 use bytes::Buf;
-use bytes::BufMut;
-use cid::Cid;
-use fil_actor_eam as eam;
-use fil_actor_eam::{EthAddress, EvmConstructorParams, RlpCreateAddress};
-use fil_actor_init::ExecReturn;
-use fil_actors_runtime::test_utils::MULTISIG_ACTOR_CODE_ID;
+use fil_actor_eam::EthAddress;
 use fil_actors_runtime::{
-    cbor, EAM_ACTOR_ADDR, EAM_ACTOR_ID, INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR, SYSTEM_ACTOR_ID,
+    EAM_ACTOR_ADDR, EAM_ACTOR_ID, INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR,
 };
 use flate2::Compression;
-// use fvm::machine::Manifest;
 use flate2::bufread::GzDecoder;
 use flate2::bufread::GzEncoder;
 use fvm_ipld_blockstore::Blockstore;
 use fvm_ipld_blockstore::MemoryBlockstore;
 use fvm_ipld_car::{load_car, CarHeader};
-use fvm_ipld_encoding::{strict_bytes, BytesDe, Cbor, CborStore, RawBytes};
-use fvm_ipld_hamt::{BytesKey, Hamt, Sha256};
+use fvm_ipld_encoding::{strict_bytes, BytesDe, Cbor, RawBytes};
 use fvm_shared::address::Address;
 use fvm_shared::econ::TokenAmount;
 use fvm_shared::METHOD_SEND;
-use multihash::Code;
 use num_traits::Zero;
-use rlp::Encodable;
 use serde::{Deserialize, Serialize};
 use serde_tuple::*;
-use std::cell::RefCell;
 use std::io::Read;
 use std::sync::Arc;
-use std::{env, fs};
 use std::collections::HashMap;
-use std::str::FromStr;
-use cid::Cid;
 use fil_actor_evm::interpreter::U256;
-use test_tvx::mock_single_actors::Mock;
+use fil_actors_runtime::runtime::builtins::Type;
+use test_tvx::mock_single_actors::{Mock, print_actor_state};
 use test_tvx::tracing_blockstore::TracingBlockStore;
-use test_tvx::util::create_account;
-use test_tvx::{string_to_ETHAddress, string_to_U256, string_to_bytes, EvmContractInput, FAUCET_ROOT_KEY, VM, EvmContractState};
+use test_tvx::{string_to_eth_address, string_to_U256, string_to_bytes, EvmContractInput, EvmContractState, compute_address_create, is_create_contract, export};
 use test_vm::util::apply_ok;
-use test_vm::{TEST_FAUCET_ADDR, TEST_VERIFREG_ROOT_SIGNER_ADDR, VERIFREG_ROOT_KEY};
+use test_vm::{FAUCET_ROOT_KEY};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -59,154 +45,38 @@ pub struct ConstructorParams {
 
 impl Cbor for ConstructorParams {}
 
-#[test]
-fn exec_rlp_test() {
-    let eth_addr = string_to_ETHAddress("443c0c6F6Cb301B49eE5E9Be07B867378e73Fb54".to_string());
-    let rlp = RlpCreateAddress { address: eth_addr, nonce: 1 };
-    let rlp_hex = hex::encode(rlp.rlp_bytes());
-    let go_rlp_hex = "d694443c0c6f6cb301b49ee5e9be07b867378e73fb5401";
-    assert_eq!(rlp_hex, go_rlp_hex);
-    //TODO: error in rlp parsing result, repair required
+#[derive(Serialize_tuple, Deserialize_tuple)]
+pub struct CreateParams {
+    #[serde(with = "strict_bytes")]
+    pub initcode: Vec<u8>,
+    pub nonce: u64,
 }
 
-#[test]
-fn exec_contract_for_env() {
-    // such as: export INPUT_EVM_CONTRACT_DATA=xxx.json
-    let input_evm_contract_data = env::var("INPUT_EVM_CONTRACT_DATA")
-        .expect("Please set the environment variable (env: INPUT_EVM_CONTRACT_DATA) ");
-    let input_evm_contract_content = fs::read_to_string(input_evm_contract_data).unwrap();
-    let input: EvmContractInput = serde_json::from_str(&input_evm_contract_content).unwrap();
-
-    let store = MemoryBlockstore::new();
-    let mut v = VM::new_with_singletons(&store, input.clone());
-    let account = create_account(&v, string_to_ETHAddress(input.context.from));
-
-    v.manual_construct_for_participants(account);
-
-    let construct_eth_addr = v.find_construct_eth_addr();
-
-    let result = if let Some(construct_eth_addr) = construct_eth_addr {
-        let mut salt = [0u8; 32];
-        salt[..20].copy_from_slice(&construct_eth_addr.0);
-        let initcode = string_to_bytes(input.context.input.clone());
-        let create_result = v
-            .apply_message(
-                account,
-                EAM_ACTOR_ADDR,
-                TokenAmount::zero(),
-                fil_actor_eam::Method::Create2 as u64,
-                fil_actor_eam::Create2Params { initcode, salt },
-            )
-            .unwrap();
-        let actor: fil_actor_eam::Create2Return =
-            create_result.ret.deserialize().expect("failed to decode results");
-        v.add_participants(actor);
-
-        let bytecode = v
-            .get_participant_bytecode(account, string_to_ETHAddress("0x00".to_string()))
-            .expect("bytecode not found");
-        hex::encode(bytecode)
-    } else {
-        let params = string_to_bytes(input.context.input);
-        let call_result = v
-            .apply_message(
-                account,
-                v.to_addr(input.context.to).expect("address not fount"),
-                TokenAmount::zero(),
-                fil_actor_evm::Method::InvokeContract as u64,
-                ContractParams(params.to_vec()),
-            )
-            .unwrap();
-        let BytesDe(return_value) =
-            call_result.ret.deserialize().expect("failed to deserialize results");
-        hex::encode(return_value)
-    };
-
-    println!("return: {:?}", result);
-    assert_eq!(result, input.context.return_result);
-
-    let storage = v.get_participants_store();
-    for (addr, state) in input.states {
-        let eth_addr = string_to_ETHAddress(addr);
-        for (k, v) in state.partial_storage_after {
-            let uk = string_to_U256(k);
-            let uv = string_to_U256(v);
-            let store =
-                storage.get(&hex::encode(eth_addr.0)).expect("contract state not exist").clone();
-            let sv = store.get(&uk).expect("contract state key not exist").clone();
-            assert_eq!(uv, sv);
-        }
-    }
-}
+impl Cbor for CreateParams {}
 
 #[test]
-fn exec_contract_1() {
-    let input: EvmContractInput =
-        serde_json::from_str(include_str!("contracts/contract1.json")).unwrap();
-    let store = MemoryBlockstore::new();
-    let mut v = VM::new_with_singletons(&store, input.clone());
-    let account = create_account(&v, string_to_ETHAddress(input.context.from));
-
-    //TODO: The rlp is not parsed correctly. You can pass the test only after the repair is completed
-    // v.manual_construct_for_participants(account);
-
-    let construct_eth_addr = string_to_ETHAddress("0x00".to_string());
-    let mut salt = [0u8; 32];
-    salt[..20].copy_from_slice(&construct_eth_addr.0);
-
-    let initcode = string_to_bytes(input.context.input.clone());
-    println!("account: {:?}", account);
-    let create_result = v
-        .apply_message(
-            account,
-            EAM_ACTOR_ADDR,
-            TokenAmount::zero(),
-            fil_actor_eam::Method::Create2 as u64,
-            fil_actor_eam::Create2Params { initcode, salt },
-        )
-        .unwrap();
-    let actor: fil_actor_eam::Create2Return =
-        create_result.ret.deserialize().expect("failed to decode results");
-    v.add_participants(actor);
-
-    let bytecode = v
-        .get_participant_bytecode(account, string_to_ETHAddress("0x00".to_string()))
-        .expect("bytecode not found");
-    let result = hex::encode(bytecode);
-
-    println!("return: {:?}", result);
-    assert_eq!(result, input.context.return_result);
-
-    // let storage = v.get_participants_store();
-    // for (addr, state) in input.states {
-    //     let eth_addr = string_to_ETHAddress(addr);
-    //     for (k, v) in state.partial_storage_after {
-    //         let uk = string_to_U256(k);
-    //         let uv = string_to_U256(v);
-    //         let store =
-    //             storage.get(&hex::encode(eth_addr.0)).expect("contract state not exist").clone();
-    //         let sv = store.get(&uk).expect("contract state key not exist").clone();
-    //         assert_eq!(uv, sv);
-    //     }
-    // }
+fn evm_create_test() {
+    let from = string_to_eth_address("0x443c0c6F6Cb301B49eE5E9Be07B867378e73Fb54");
+    let expected = string_to_eth_address("0xcc3d7ca4a302d196e70760e772ee26d38bd09dca");
+    let result = compute_address_create(&EthAddress(from.0), 1);
+    assert_eq!(result.0[..], expected.0[..]);
 }
 
 #[async_std::test]
 async fn mock_single_actor_blockstore() {
     let store = TracingBlockStore::new(MemoryBlockstore::new());
     let mut mock = Mock::new(&store);
-    mock.mock_system_actor();
-    mock.mock_init_actor();
+    mock.mock_builtin_actor();
 
     let eth_addr = Address::new_delegated(
         EAM_ACTOR_ID,
-        &string_to_ETHAddress(String::from("0x443c0c6F6Cb301B49eE5E9Be07B867378e73Fb54")).0,
+        &string_to_eth_address("0x443c0c6F6Cb301B49eE5E9Be07B867378e73Fb54").0,
     ).unwrap();
     mock.mock_embryo_address_actor(eth_addr, TokenAmount::zero());
 
     let (tx, mut rx) = bounded(100);
 
-    let state_root = mock.state_root.borrow().clone();
+    let state_root = mock.get_state_root();
     let car_header = CarHeader::new(vec![state_root], 1);
     let buffer: Arc<RwLock<Vec<u8>>> = Default::default();
     let buffer_cloned = buffer.clone();
@@ -243,7 +113,7 @@ async fn mock_single_actor_blockstore() {
 
     // let vm = test_vm::VM::new(&store.base);
     let vm = test_vm::VM::new(&test_store);
-    vm.state_root.replace(mock.state_root.into_inner());
+    vm.state_root.replace(mock.get_state_root());
 
     let init_actor = vm.get_actor(INIT_ACTOR_ADDR).unwrap();
     println!("init_actor: {:?}", init_actor);
@@ -265,88 +135,175 @@ async fn mock_single_actor_blockstore() {
     );
 }
 
-#[test]
-fn exec_contract_k() {
-    let store = MemoryBlockstore::new();
-    let mut mock = Mock::new(&store);
-    mock.mock_system_actor();
-    mock.mock_init_actor();
-
-    let eth_addr1 = Address::new_delegated(
-        10,
-        &string_to_ETHAddress(String::from("0x443c0c6F6Cb301B49eE5E9Be07B867378e73Fb54")).0,
-    ).unwrap();
-    mock.mock_embryo_address_actor(eth_addr1, TokenAmount::zero());
-
-    let delegated_addr2 = Address::new_delegated(
-        10,
-        &string_to_ETHAddress(String::from("0x00")).0,
-    ).unwrap();
-    mock.mock_evm_actor(delegated_addr2, TokenAmount::zero());
-
-    // println!("{:?}", state);
-
-    // let vm = test_vm::VM::new(&store);
-    // let cid = Cid::from_str("bafy2bzacedpgfoy4sqegabrjn2xuqebaeiupm6yndjpy23srpvwuelfokq2xa").unwrap();
-    // println!("state_root {:?}", mock.state_root.borrow().to_string());
-    // vm.state_root.replace(mock.state_root.into_inner());
-    //
-    // let input: EvmContractInput = serde_json::from_str(include_str!("contracts/contract1.json")).unwrap();
-    // let params = string_to_bytes(input.context.input);
-    // let call_result = vm
-    //     .apply_message(
-    //         Address::new_id(1),
-    //         delegated_addr2,
-    //         TokenAmount::zero(),
-    //         fil_actor_evm::Method::Constructor as u64,
-    //         ConstructorParams{
-    //             creator: string_to_ETHAddress(String::from("0x443c0c6F6Cb301B49eE5E9Be07B867378e73Fb54")),
-    //             initcode: params
-    //         },
-    //     )
-    //     .unwrap();
-    // let BytesDe(return_value) =
-    //     call_result.ret.deserialize().expect("failed to deserialize results");
-    // let result = hex::encode(return_value);
-
-    // println!("return: {:?}", call_result);
+#[async_std::test]
+async fn exec_export() {
+    let input: EvmContractInput = serde_json::from_str(include_str!("contracts/contract2.json")).unwrap();
+    export(input).await;
 }
 
 #[test]
-fn exec_contract_blockstore_2() {
+fn exec_contract() {
+    let inputs: [EvmContractInput; 3] = [
+        serde_json::from_str(include_str!("contracts/contract1.json")).unwrap(),
+        serde_json::from_str(include_str!("contracts/contract2.json")).unwrap(),
+        serde_json::from_str(include_str!("contracts/contract3.json")).unwrap(),
+    ];
+    for input in inputs {
+        let store = MemoryBlockstore::new();
+        let mut mock = Mock::new(&store);
+        mock.mock_builtin_actor();
+
+        let from = Address::new_delegated(
+            10,
+            &string_to_eth_address(&input.context.from).0,
+        ).unwrap();
+        mock.mock_embryo_address_actor(from, TokenAmount::zero());
+
+        for (eth_addr, state) in input.states {
+            let eth_addr = string_to_eth_address(&eth_addr);
+            if is_create_contract(&input.context.to) && eth_addr.eq(&compute_address_create(&string_to_eth_address(&input.context.from), input.context.nonce)) {
+                continue;
+            }
+            let to = Address::new_delegated(
+                10,
+                &eth_addr.0,
+            ).unwrap();
+            mock.mock_evm_actor(to, TokenAmount::zero());
+
+            let mut storage = HashMap::<U256, U256>::new();
+            for (k, v) in state.partial_storage_before {
+                let key = string_to_U256(&k);
+                let value = string_to_U256(&v);
+                storage.insert(key, value);
+            }
+            let bytecode = string_to_bytes(&state.code);
+            mock.mock_evm_actor_state(to, storage, Some(bytecode));
+        }
+
+        let vm = test_vm::VM::new(&store);
+        vm.state_root.replace(mock.get_state_root());
+        let params = string_to_bytes(&input.context.input);
+
+        if is_create_contract(&input.context.to) {
+            let create_result = vm
+                .apply_message(
+                    from,
+                    EAM_ACTOR_ADDR,
+                    TokenAmount::zero(),
+                    fil_actor_eam::Method::Create as u64,
+                    CreateParams { initcode: params, nonce: input.context.nonce },
+                )
+                .unwrap();
+
+            assert!(
+                create_result.code.is_success(),
+                "failed to create the new actor {}",
+                create_result.message
+            );
+
+            // let create_return: fil_actor_eam::CreateReturn =
+            //     create_result.ret.deserialize().expect("failed to decode results");
+
+            // println!("create_return: {:?}", create_return);
+        } else {
+            let to = Address::new_delegated(
+                10,
+                &string_to_eth_address(&input.context.to).0,
+            ).unwrap();
+            let call_result = vm
+                .apply_message(
+                    from,
+                    to,
+                    TokenAmount::zero(),
+                    fil_actor_evm::Method::InvokeContract as u64,
+                    ContractParams(params.to_vec()),
+                )
+                .unwrap();
+            let BytesDe(return_value) =
+                call_result.ret.deserialize().expect("failed to deserialize results");
+            let result = hex::encode(return_value);
+
+            assert_eq!(result, input.context.return_result);
+        }
+    }
+}
+
+#[test]
+fn exec_contract_1() {
+    let input: EvmContractInput = serde_json::from_str(include_str!("contracts/contract1.json")).unwrap();
+    let store = MemoryBlockstore::new();
+    let mut mock = Mock::new(&store);
+    mock.mock_builtin_actor();
+
+    let from = Address::new_delegated(
+        10,
+        &string_to_eth_address("0x443c0c6F6Cb301B49eE5E9Be07B867378e73Fb54").0,
+    ).unwrap();
+    mock.mock_embryo_address_actor(from, TokenAmount::zero());
+
+    let vm = test_vm::VM::new(&store);
+    vm.state_root.replace(mock.get_state_root());
+
+    let params = string_to_bytes(&input.context.input);
+    let create_result = vm
+        .apply_message(
+            from,
+            EAM_ACTOR_ADDR,
+            TokenAmount::zero(),
+            fil_actor_eam::Method::Create as u64,
+            CreateParams { initcode: params, nonce: input.context.nonce },
+        )
+        .unwrap();
+
+    assert!(
+        create_result.code.is_success(),
+        "failed to create the new actor {}",
+        create_result.message
+    );
+
+    let create_return: fil_actor_eam::CreateReturn =
+        create_result.ret.deserialize().expect("failed to decode results");
+
+    println!("create_return: {:?}", create_return);
+
+    print_actor_state(vm.state_root.borrow().clone(), &store);
+}
+
+#[test]
+fn exec_contract_2() {
     let input: EvmContractInput = serde_json::from_str(include_str!("contracts/contract2.json")).unwrap();
 
     let store = MemoryBlockstore::new();
     let mut mock = Mock::new(&store);
-    mock.mock_system_actor();
-    mock.mock_init_actor();
+    mock.mock_builtin_actor();
 
     let from = Address::new_delegated(
         10,
-        &string_to_ETHAddress(String::from("0x443c0c6F6Cb301B49eE5E9Be07B867378e73Fb54")).0,
+        &string_to_eth_address(&input.context.from).0,
     ).unwrap();
     mock.mock_embryo_address_actor(from, TokenAmount::zero());
 
     let to = Address::new_delegated(
         10,
-        &string_to_ETHAddress(String::from("0x3471Ff6AFE294B8cF742DbEAbaBE1476759297F0")).0,
+        &string_to_eth_address(&input.context.to).0,
     ).unwrap();
     mock.mock_evm_actor(to, TokenAmount::zero());
-    let evm_state: EvmContractState = input.states.get(&String::from("0x3471ff6afe294b8cf742dbeababe1476759297f0")).unwrap().clone();
+    let evm_state: EvmContractState = input.states.get("0x3471ff6afe294b8cf742dbeababe1476759297f0").unwrap().clone();
     let mut storage = HashMap::<U256, U256>::new();
     for (k, v) in evm_state.partial_storage_before {
-        let key = string_to_U256(k);
-        let value = string_to_U256(v);
+        let key = string_to_U256(&k);
+        let value = string_to_U256(&v);
         storage.insert(key, value);
     }
-    let bytecode = string_to_bytes(evm_state.code);
-    mock.mock_init_evm_actor_state(to, storage, bytecode);
+    let bytecode = string_to_bytes(&evm_state.code);
+    mock.mock_evm_actor_state(to, storage, Some(bytecode));
 
     let vm = test_vm::VM::new(&store);
-    vm.state_root.replace(mock.state_root.into_inner());
+    vm.state_root.replace(mock.get_state_root());
 
-    let params = string_to_bytes(input.context.input);
-    println!("params {:?}", hex::encode(params.clone()));
+    println!("pre_state_root: {:?}", vm.state_root.borrow());
+
+    let params = string_to_bytes(&input.context.input);
     let call_result = vm
         .apply_message(
             from,
@@ -360,92 +317,10 @@ fn exec_contract_blockstore_2() {
         call_result.ret.deserialize().expect("failed to deserialize results");
     let result = hex::encode(return_value);
 
-    // mock.print_actor_evm_state(to);
-
     println!("return: {:?}", result);
     assert_eq!(result, input.context.return_result);
 
-}
+    println!("post_state_root: {:?}", vm.state_root.borrow());
 
-#[test]
-fn exec_contract_2() {
-    let input: EvmContractInput =
-        serde_json::from_str(include_str!("contracts/contract2.json")).unwrap();
-    let store = MemoryBlockstore::new();
-    let mut v = VM::new_with_singletons(&store, input.clone());
-    let account = create_account(&v, string_to_ETHAddress("0x443c0c6F6Cb301B49eE5E9Be07B867378e73Fb54".to_string()));
-
-    v.manual_construct_for_participants(account);
-
-    let params = string_to_bytes(input.context.input);
-    println!("params {:?}", hex::encode(params.clone()));
-    let call_result = v
-        .apply_message(
-            account,
-            v.to_addr(input.context.to).expect("address not fount"),
-            TokenAmount::zero(),
-            fil_actor_evm::Method::InvokeContract as u64,
-            ContractParams(params.to_vec()),
-        )
-        .unwrap();
-    let BytesDe(return_value) =
-        call_result.ret.deserialize().expect("failed to deserialize results");
-    let result = hex::encode(return_value);
-
-    println!("return: {:?}", result);
-    assert_eq!(result, input.context.return_result);
-    //
-    let storage = v.get_participants_store();
-    // for (addr, state) in input.states {
-    //     let eth_addr = string_to_ETHAddress(addr);
-    //     for (k, v) in state.partial_storage_after {
-    //         let uk = string_to_U256(k);
-    //         let uv = string_to_U256(v);
-    //         let store =
-    //             storage.get(&hex::encode(eth_addr.0)).expect("contract state not exist").clone();
-    //         let sv = store.get(&uk).expect("contract state key not exist").clone();
-    //         assert_eq!(uv, sv);
-    //     }
-    // }
-}
-
-#[test]
-fn exec_contract_3() {
-    let input: EvmContractInput =
-        serde_json::from_str(include_str!("contracts/contract3.json")).unwrap();
-    let store = MemoryBlockstore::new();
-    let mut v = VM::new_with_singletons(&store, input.clone());
-    let account = create_account(&v, string_to_ETHAddress(input.context.from));
-
-    v.manual_construct_for_participants(account);
-
-    let params = string_to_bytes(input.context.input);
-    let call_result = v
-        .apply_message(
-            account,
-            v.to_addr(input.context.to).expect("address not fount"),
-            TokenAmount::zero(),
-            fil_actor_evm::Method::InvokeContract as u64,
-            ContractParams(params.to_vec()),
-        )
-        .unwrap();
-    let BytesDe(return_value) =
-        call_result.ret.deserialize().expect("failed to deserialize results");
-    let result = hex::encode(return_value);
-
-    println!("return: {:?}", result);
-    assert_eq!(result, input.context.return_result);
-
-    let storage = v.get_participants_store();
-    for (addr, state) in input.states {
-        let eth_addr = string_to_ETHAddress(addr);
-        for (k, v) in state.partial_storage_after {
-            let uk = string_to_U256(k);
-            let uv = string_to_U256(v);
-            let store =
-                storage.get(&hex::encode(eth_addr.0)).expect("contract state not exist").clone();
-            let sv = store.get(&uk).expect("contract state key not exist").clone();
-            assert_eq!(uv, sv);
-        }
-    }
+    print_actor_state(vm.state_root.borrow().clone(), &store);
 }
