@@ -2,7 +2,7 @@ use cid::Cid;
 use fvm_shared::{clock::ChainEpoch, randomness::Randomness, receipt::Receipt};
 use serde::{Deserialize, Deserializer, Serialize};
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Selector {
     #[serde(default)]
     pub chaos_actor: Option<String>,
@@ -12,7 +12,7 @@ pub struct Selector {
     pub consensus_fault: Option<String>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct MetaData {
     pub id: String,
     #[serde(default)]
@@ -24,7 +24,7 @@ pub struct MetaData {
     pub gen: Vec<GenerationData>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct GenerationData {
     #[serde(default)]
     pub source: String,
@@ -32,20 +32,20 @@ pub struct GenerationData {
     pub version: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct StateTreeVector {
     #[serde(with = "super::cidjson")]
     pub root_cid: Cid,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct Variant {
     pub id: String,
     pub epoch: ChainEpoch,
     pub nv: u32,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PreConditions {
     pub state_tree: StateTreeVector,
     #[serde(default)]
@@ -56,16 +56,14 @@ pub struct PreConditions {
     pub variants: Vec<Variant>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct PostConditions {
     pub state_tree: StateTreeVector,
     #[serde(with = "message_receipt_vec")]
     pub receipts: Vec<Receipt>,
-    #[serde(default, with = "super::cidjson::vec")]
-    pub receipts_roots: Vec<Cid>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct ApplyMessage {
     #[serde(with = "base64_bytes")]
     pub bytes: Vec<u8>,
@@ -73,7 +71,7 @@ pub struct ApplyMessage {
     pub epoch_offset: Option<ChainEpoch>,
 }
 
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TestVector {
     pub class: String,
     pub selector: Option<Selector>,
@@ -93,7 +91,7 @@ pub struct TestVector {
 mod base64_bytes {
     use std::borrow::Cow;
 
-    use serde::de;
+    use serde::{de, Serializer};
 
     use super::*;
 
@@ -104,15 +102,24 @@ mod base64_bytes {
         let s: Cow<'de, str> = Deserialize::deserialize(deserializer)?;
         base64::decode(s.as_ref()).map_err(de::Error::custom)
     }
+
+    pub fn serialize<S>(data: &Vec<u8>, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let encode_str = base64::encode(data);
+        encode_str.serialize(serializer)
+    }
 }
 
 mod message_receipt_vec {
     use fvm_ipld_encoding::RawBytes;
     use fvm_shared::error::ExitCode;
+    use serde::Serializer;
 
     use super::*;
 
-    #[derive(Deserialize)]
+    #[derive(Deserialize, Serialize)]
     pub struct MessageReceiptVector {
         exit_code: ExitCode,
         #[serde(rename = "return", with = "base64_bytes")]
@@ -133,5 +140,20 @@ mod message_receipt_vec {
                 events_root: None,
             })
             .collect())
+    }
+
+    pub fn serialize<S>(data: &Vec<Receipt>, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let output: Vec<MessageReceiptVector> = data
+            .into_iter()
+            .map(|v| MessageReceiptVector {
+                exit_code: v.exit_code,
+                return_value: v.return_data.clone().into(),
+                gas_used: v.gas_used,
+            })
+            .collect();
+        output.serialize(serializer)
     }
 }

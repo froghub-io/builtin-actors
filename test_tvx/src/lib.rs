@@ -1,58 +1,102 @@
-use cid::multihash::Code;
-use cid::multihash::MultihashDigest;
-use fil_actor_eam::EthAddress;
-use fil_actor_evm::interpreter::U256;
-use fvm_shared::bigint::{BigInt, Integer};
-use fvm_shared::crypto::hash::SupportedHashes;
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use std::str::FromStr;
-use fvm_ipld_blockstore::{Blockstore, MemoryBlockstore};
-use fvm_shared::address::Address;
-use fvm_shared::econ::TokenAmount;
-use num_traits::Zero;
-use std::io::Read;
-use std::sync::Arc;
-use flate2::Compression;
-use flate2::bufread::GzDecoder;
-use flate2::bufread::GzEncoder;
+use crate::mock_single_actors::Mock;
+use crate::tracing_blockstore::TracingBlockStore;
 use async_std::channel::bounded;
 use async_std::io::Cursor;
 use async_std::sync::RwLock;
-use fvm_ipld_car::CarHeader;
 use bytes::Buf;
+use cid::multihash::Code;
+use cid::multihash::MultihashDigest;
 use cid::Cid;
+use fil_actor_eam::EthAddress;
+use fil_actor_evm::interpreter::U256;
+use flate2::bufread::GzDecoder;
+use flate2::bufread::GzEncoder;
+use flate2::Compression;
+use fvm_ipld_blockstore::{Blockstore, MemoryBlockstore};
+use fvm_ipld_car::CarHeader;
+use fvm_ipld_encoding::Cbor;
 use fvm_ipld_encoding::RawBytes;
+use fvm_shared::address::Address;
+use fvm_shared::bigint::{BigInt, Integer};
+use fvm_shared::clock::ChainEpoch;
+use fvm_shared::crypto::hash::SupportedHashes;
+use fvm_shared::econ::TokenAmount;
 use fvm_shared::error::ExitCode;
 use fvm_shared::message::Message;
+use fvm_shared::randomness::RANDOMNESS_LENGTH;
 use fvm_shared::receipt::Receipt;
-use crate::mock_single_actors::Mock;
-use crate::tracing_blockstore::TracingBlockStore;
+use fvm_shared::version::NetworkVersion;
+use num_traits::Zero;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::fs::File;
+use std::io::BufWriter;
+use std::io::Read;
+use std::path::Path;
+use std::path::PathBuf;
+use std::str::FromStr;
+use std::sync::Arc;
+use vector::ApplyMessage;
+use vector::PreConditions;
+use vector::StateTreeVector;
+use vector::TestVector;
+use vector::Variant;
 
+mod cidjson;
 pub mod mock_single_actors;
 pub mod tracing_blockstore;
 mod util;
+mod vector;
 
+pub async fn export_test_vector_file(input: EvmContractInput, path: PathBuf) -> anyhow::Result<()> {
+    let (pre_state_root, post_state_root, message, receipt, bytes) = export(input).await;
+    let variants = vec![Variant {
+        id: String::from("test_evm"),
+        epoch: 2383680,
+        nv: NetworkVersion::V18 as u32,
+    }];
+    let test_vector = TestVector {
+        class: String::from_str("message")?,
+        selector: None,
+        meta: None,
+        car: bytes,
+        preconditions: PreConditions {
+            state_tree: StateTreeVector { root_cid: pre_state_root },
+            basefee: None,
+            circ_supply: None,
+            variants,
+        },
+        apply_messages: vec![ApplyMessage { bytes: message.marshal_cbor()?, epoch_offset: None }],
+        postconditions: vector::PostConditions {
+            state_tree: StateTreeVector { root_cid: post_state_root },
+            receipts: vec![receipt],
+        },
+        randomness: fvm_shared::randomness::Randomness(vec![0u8; RANDOMNESS_LENGTH]),
+    };
+
+    let output = File::create(&path)?;
+    serde_json::to_writer_pretty(output, &test_vector)?;
+    Ok(())
+}
 
 pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Receipt, Vec<u8>) {
     let store = TracingBlockStore::new(MemoryBlockstore::new());
     let mut mock = Mock::new(&store);
     mock.mock_builtin_actor();
 
-    let from = Address::new_delegated(
-        10,
-        &string_to_eth_address(&input.context.from).0,
-    ).unwrap();
+    let from = Address::new_delegated(10, &string_to_eth_address(&input.context.from).0).unwrap();
     mock.mock_embryo_address_actor(from, TokenAmount::zero());
 
     // preconditions
     for (eth_addr, state) in &input.states {
         let eth_addr = string_to_eth_address(&eth_addr);
-        let to = Address::new_delegated(
-            10,
-            &eth_addr.0,
-        ).unwrap();
-        if is_create_contract(&input.context.to) && eth_addr.eq(&compute_address_create(&string_to_eth_address(&input.context.from), input.context.nonce)) {
+        let to = Address::new_delegated(10, &eth_addr.0).unwrap();
+        if is_create_contract(&input.context.to)
+            && eth_addr.eq(&compute_address_create(
+                &string_to_eth_address(&input.context.from),
+                input.context.nonce,
+            ))
+        {
             continue;
         }
         mock.mock_evm_actor(to, TokenAmount::zero());
@@ -72,11 +116,13 @@ pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Receipt, Vec
     // postconditions
     for (eth_addr, state) in &input.states {
         let eth_addr = string_to_eth_address(&eth_addr);
-        let to = Address::new_delegated(
-            10,
-            &eth_addr.0,
-        ).unwrap();
-        if is_create_contract(&input.context.to) && eth_addr.eq(&compute_address_create(&string_to_eth_address(&input.context.from), input.context.nonce)) {
+        let to = Address::new_delegated(10, &eth_addr.0).unwrap();
+        if is_create_contract(&input.context.to)
+            && eth_addr.eq(&compute_address_create(
+                &string_to_eth_address(&input.context.from),
+                input.context.nonce,
+            ))
+        {
             mock.mock_evm_actor(to, TokenAmount::zero());
         }
         let mut storage = HashMap::<U256, U256>::new();
@@ -85,7 +131,11 @@ pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Receipt, Vec
             let value = string_to_U256(&v);
             storage.insert(key, value);
         }
-        let bytecode = if is_create_contract(&input.context.to) && eth_addr.eq(&compute_address_create(&string_to_eth_address(&input.context.from), input.context.nonce)) {
+        let bytecode = if is_create_contract(&input.context.to)
+            && eth_addr.eq(&compute_address_create(
+                &string_to_eth_address(&input.context.from),
+                input.context.nonce,
+            )) {
             Some(string_to_bytes(&state.code))
         } else {
             None
@@ -102,7 +152,8 @@ pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Receipt, Vec
 
     let receipt = Receipt {
         exit_code: ExitCode::OK,
-        return_data: RawBytes::serialize(hex::decode(&input.context.return_result).unwrap()).unwrap(),
+        return_data: RawBytes::serialize(hex::decode(&input.context.return_result).unwrap())
+            .unwrap(),
         gas_used: 0,
         events_root: None,
     };
@@ -139,7 +190,6 @@ pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Receipt, Vec
     println!("gz_car_bytes: {:?}", gz_car_bytes);
 
     (pre_state_root, post_state_root, message, receipt, gz_car_bytes)
-
 }
 
 pub fn compute_address_create(from: &EthAddress, nonce: u64) -> EthAddress {
