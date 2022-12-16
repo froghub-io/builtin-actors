@@ -83,7 +83,7 @@ fn get_code_cid_map() -> anyhow::Result<HashMap<u32, Cid>> {
     let (_, builtin_actors_cid): (u32, Cid) =
         bs.get_cbor(&manifest_cid)?.context("failed to load actor manifest")?;
 
-    let vec: Vec<(String, Cid)> = match bs.get_cbor(&manifest_cid)? {
+    let vec: Vec<(String, Cid)> = match bs.get_cbor(&builtin_actors_cid)? {
         Some(vec) => vec,
         None => {
             return Err(anyhow!("cannot find manifest root cid {}", manifest_cid));
@@ -91,7 +91,7 @@ fn get_code_cid_map() -> anyhow::Result<HashMap<u32, Cid>> {
     };
 
     let mut by_id = HashMap::new();
-    for ((name, code_cid), id) in vec.into_iter().zip(1u32..) {
+    for ((_, code_cid), id) in vec.into_iter().zip(1u32..) {
         by_id.insert(id, code_cid);
     }
     Ok(by_id)
