@@ -72,8 +72,8 @@ use std::cell::{RefCell, RefMut};
 use std::collections::HashMap;
 use std::error::Error;
 use std::ops::Add;
-use std::{fmt, iter};
 use std::str::FromStr;
+use std::{fmt, iter};
 
 pub mod mock_single_actors;
 pub mod tracing_blockstore;
@@ -1704,7 +1704,7 @@ pub fn string_to_big_int(str: String) -> BigInt {
         } else {
             str.to_string()
         })
-            .unwrap()
+        .unwrap()
     } else {
         hex::decode(if str.len().is_odd() {
             let mut s = String::from("0");
@@ -1713,7 +1713,7 @@ pub fn string_to_big_int(str: String) -> BigInt {
         } else {
             str.to_string()
         })
-            .unwrap()
+        .unwrap()
     };
     BigInt::from_str(&*hex::encode(v)).unwrap()
 }

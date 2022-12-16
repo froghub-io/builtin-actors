@@ -3778,6 +3778,7 @@ dependencies = [
  "fil_actor_system",
  "fil_actor_verifreg",
  "fil_actors_runtime",
+ "fil_builtin_actors_bundle",
  "fil_builtin_actors_state",
  "flate2",
  "frc46_token",
