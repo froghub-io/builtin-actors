@@ -10,14 +10,15 @@ use cid::multihash::MultihashDigest;
 use cid::Cid;
 use fil_actor_eam::EthAddress;
 use fil_actor_evm::interpreter::U256;
+use fil_actors_runtime::runtime::builtins::Type;
 use fil_actors_runtime::runtime::EMPTY_ARR_CID;
-use fil_actors_runtime::INIT_ACTOR_ADDR;
 use flate2::bufread::GzDecoder;
 use flate2::bufread::GzEncoder;
 use flate2::Compression;
 use fvm_ipld_blockstore::{Blockstore, MemoryBlockstore};
 use fvm_ipld_car::CarHeader;
 use fvm_ipld_encoding::Cbor;
+use fvm_ipld_encoding::CborStore;
 use fvm_ipld_encoding::RawBytes;
 use fvm_ipld_hamt::Hamt;
 use fvm_shared::address::Address;
@@ -31,8 +32,10 @@ use fvm_shared::randomness::RANDOMNESS_LENGTH;
 use fvm_shared::receipt::Receipt;
 use fvm_shared::version::NetworkVersion;
 use fvm_shared::HAMT_BIT_WIDTH;
+use mock_single_actors::to_message;
 use num_traits::Zero;
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::BufWriter;
@@ -41,6 +44,7 @@ use std::path::Path;
 use std::path::PathBuf;
 use std::str::FromStr;
 use std::sync::Arc;
+use util::get_code_cid_map;
 use vector::ApplyMessage;
 use vector::PreConditions;
 use vector::StateTreeVector;
@@ -54,7 +58,49 @@ mod util;
 mod vector;
 
 pub async fn export_test_vector_file(input: EvmContractInput, path: PathBuf) -> anyhow::Result<()> {
-    let (pre_state_root, post_state_root, message, receipt, bytes) = export(input).await;
+    let actor_codes = get_code_cid_map().unwrap();
+    let store = TracingBlockStore::new(MemoryBlockstore::new());
+
+    let (pre_state_root, post_state_root) = load_evm_constract_input(&store, actor_codes, &input);
+    let pre_state_root =
+        store.put_cbor(&(5, pre_state_root, EMPTY_ARR_CID), Code::Blake2b256).unwrap();
+    let post_state_root =
+        store.put_cbor(&(5, post_state_root, EMPTY_ARR_CID), Code::Blake2b256).unwrap();
+
+    //car_bytes
+    let car_header = CarHeader::new(vec![pre_state_root, post_state_root], 1);
+    let (tx, mut rx) = bounded(100);
+    let buffer: Arc<RwLock<Vec<u8>>> = Default::default();
+    let buffer_cloned = buffer.clone();
+    let write_task = async_std::task::spawn(async move {
+        car_header.write_stream_async(&mut *buffer_cloned.write().await, &mut rx).await.unwrap()
+    });
+    for cid in (&store).traced.borrow().iter() {
+        tx.send((cid.clone(), store.base.get(cid).unwrap().unwrap())).await.unwrap();
+    }
+    drop(tx);
+    write_task.await;
+    let car_bytes = buffer.read().await.clone();
+
+    //gzip car_bytes
+    let mut gz_car_bytes: Vec<u8> = Default::default();
+    let mut gz_encoder = GzEncoder::new(car_bytes.reader(), Compression::new(9));
+    gz_encoder.read_to_end(&mut gz_car_bytes).unwrap();
+
+    //message
+    let message = to_message(&input.context);
+
+    //receipt
+    let receipt = Receipt {
+        exit_code: ExitCode::OK,
+        return_data: RawBytes::serialize(hex::decode(&input.context.return_result).unwrap())
+            .unwrap(),
+        gas_used: 0,
+        events_root: None,
+    };
+    println!("receipt: {:?}", receipt);
+
+    // let (pre_state_root, post_state_root, message, receipt, bytes) = export(input).await;
     let variants = vec![Variant {
         id: String::from("test_evm"),
         epoch: 2383680,
@@ -64,7 +110,7 @@ pub async fn export_test_vector_file(input: EvmContractInput, path: PathBuf) -> 
         class: String::from_str("message")?,
         selector: None,
         meta: None,
-        car: bytes,
+        car: gz_car_bytes,
         preconditions: PreConditions {
             state_tree: StateTreeVector { root_cid: pre_state_root },
             basefee: None,
@@ -84,19 +130,21 @@ pub async fn export_test_vector_file(input: EvmContractInput, path: PathBuf) -> 
     Ok(())
 }
 
-pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Receipt, Vec<u8>) {
-    let store = TracingBlockStore::new(MemoryBlockstore::new());
-    let mut mock = Mock::new(&store);
+pub fn load_evm_constract_input<BS>(
+    store: &BS,
+    actor_codes: BTreeMap<Type, Cid>,
+    input: &EvmContractInput,
+) -> (Cid, Cid)
+where
+    BS: Blockstore,
+{
+    let mut mock = Mock::new(store, actor_codes);
     mock.mock_builtin_actor();
 
     let from = Address::new_delegated(10, &string_to_eth_address(&input.context.from).0).unwrap();
-    //TODO balance mock
-    mock.mock_embryo_address_actor(from, TokenAmount::from_whole(10000));
-    println!(
-        "mock from_addr: {:?}, {:?}",
-        from.to_string(),
-        mock.normalize_address(&from).unwrap().to_string()
-    );
+    let from_nonce = input.context.nonce;
+    //TODO balance
+    mock.mock_embryo_address_actor(from, TokenAmount::from_whole(100000000), from_nonce);
 
     // preconditions
     for (eth_addr, state) in &input.states {
@@ -124,11 +172,7 @@ pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Receipt, Vec
         mock.mock_evm_actor_state(to, storage, Some(bytecode));
     }
     let pre_state_root = mock.get_state_root();
-    let pre_state_root = mock.put_store(&(5, pre_state_root, EMPTY_ARR_CID));
     println!("pre_state_root: {:?}", pre_state_root);
-
-    let init_actor = mock.get_actor(Address::new_id(1)).unwrap();
-    println!("init_actor: {:?}, key:{:?}", init_actor, INIT_ACTOR_ADDR.to_bytes());
 
     // postconditions
     for (eth_addr, state) in &input.states {
@@ -161,54 +205,129 @@ pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Receipt, Vec
     }
 
     let post_state_root = mock.get_state_root();
-    let post_state_root = mock.put_store(&(5, post_state_root, EMPTY_ARR_CID));
     println!("post_state_root: {:?}", post_state_root);
 
-    let message = mock.to_message(&input.context);
-
-    println!("message: {:?}", message);
-
-    let receipt = Receipt {
-        exit_code: ExitCode::OK,
-        return_data: RawBytes::serialize(hex::decode(&input.context.return_result).unwrap())
-            .unwrap(),
-        gas_used: 0,
-        events_root: None,
-    };
-
-    println!("receipt: {:?}", receipt);
-
-    let (tx, mut rx) = bounded(100);
-    let state_root = mock.get_state_root();
-    let car_header = CarHeader::new(vec![state_root], 1);
-    let buffer: Arc<RwLock<Vec<u8>>> = Default::default();
-    let buffer_cloned = buffer.clone();
-    let write_task = async_std::task::spawn(async move {
-        car_header.write_stream_async(&mut *buffer_cloned.write().await, &mut rx).await.unwrap()
-    });
-
-    for cid in (&store).traced.borrow().iter() {
-        tx.send((cid.clone(), store.base.get(cid).unwrap().unwrap())).await.unwrap();
-    }
-
-    drop(tx);
-    write_task.await;
-
-    let car_bytes = buffer.read().await.clone();
-
-    let mut gz_car_bytes: Vec<u8> = Default::default();
-    let mut gz_encoder = GzEncoder::new(car_bytes.reader(), Compression::new(9));
-    gz_encoder.read_to_end(&mut gz_car_bytes).unwrap();
-
-    let mut gz_decoder = GzDecoder::new(gz_car_bytes.as_slice());
-
-    let mut car_bytes: Vec<u8> = Default::default();
-    gz_decoder.read_to_end(&mut car_bytes).unwrap();
-
-    println!("gz_car_bytes: {:?}", gz_car_bytes);
-
-    (pre_state_root, post_state_root, message, receipt, gz_car_bytes)
+    return (pre_state_root, post_state_root);
 }
+
+//pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Receipt, Vec<u8>) {
+//    let store = TracingBlockStore::new(MemoryBlockstore::new());
+//    let mut mock = Mock::new(&store);
+//    mock.mock_builtin_actor();
+
+//    let from = Address::new_delegated(10, &string_to_eth_address(&input.context.from).0).unwrap();
+//    let from_nonce = input.context.nonce;
+//    //TODO balance mock
+//    mock.mock_embryo_address_actor(from, TokenAmount::from_whole(100000000), from_nonce);
+
+//    // preconditions
+//    for (eth_addr, state) in &input.states {
+//        let eth_addr = string_to_eth_address(&eth_addr);
+//        let to = Address::new_delegated(10, &eth_addr.0).unwrap();
+//        println!("mock eth_addr: {:?}", to.to_string());
+
+//        if is_create_contract(&input.context.to)
+//            && eth_addr.eq(&compute_address_create(
+//                &string_to_eth_address(&input.context.from),
+//                input.context.nonce,
+//            ))
+//        {
+//            continue;
+//        }
+//        mock.mock_evm_actor(to, TokenAmount::zero());
+
+//        let mut storage = HashMap::<U256, U256>::new();
+//        for (k, v) in &state.partial_storage_before {
+//            let key = string_to_U256(&k);
+//            let value = string_to_U256(&v);
+//            storage.insert(key, value);
+//        }
+//        let bytecode = string_to_bytes(&state.code);
+//        mock.mock_evm_actor_state(to, storage, Some(bytecode));
+//    }
+//    let pre_state_root = mock.get_state_root();
+//    let pre_state_root = mock.put_store(&(5, pre_state_root, EMPTY_ARR_CID));
+//    println!("pre_state_root: {:?}", pre_state_root);
+
+//    // postconditions
+//    for (eth_addr, state) in &input.states {
+//        let eth_addr = string_to_eth_address(&eth_addr);
+//        let to = Address::new_delegated(10, &eth_addr.0).unwrap();
+//        if is_create_contract(&input.context.to)
+//            && eth_addr.eq(&compute_address_create(
+//                &string_to_eth_address(&input.context.from),
+//                input.context.nonce,
+//            ))
+//        {
+//            mock.mock_evm_actor(to, TokenAmount::zero());
+//        }
+//        let mut storage = HashMap::<U256, U256>::new();
+//        for (k, v) in &state.partial_storage_after {
+//            let key = string_to_U256(&k);
+//            let value = string_to_U256(&v);
+//            storage.insert(key, value);
+//        }
+//        let bytecode = if is_create_contract(&input.context.to)
+//            && eth_addr.eq(&compute_address_create(
+//                &string_to_eth_address(&input.context.from),
+//                input.context.nonce,
+//            )) {
+//            Some(string_to_bytes(&state.code))
+//        } else {
+//            None
+//        };
+//        mock.mock_evm_actor_state(to, storage, bytecode);
+//    }
+
+//    let post_state_root = mock.get_state_root();
+//    let post_state_root = mock.put_store(&(5, post_state_root, EMPTY_ARR_CID));
+//    println!("post_state_root: {:?}", post_state_root);
+
+//    let message = mock.to_message(&input.context);
+
+//    println!("message: {:?}", message);
+
+//    let receipt = Receipt {
+//        exit_code: ExitCode::OK,
+//        return_data: RawBytes::serialize(hex::decode(&input.context.return_result).unwrap())
+//            .unwrap(),
+//        gas_used: 0,
+//        events_root: None,
+//    };
+
+//    println!("receipt: {:?}", receipt);
+
+//    let (tx, mut rx) = bounded(100);
+//    let state_root = mock.get_state_root();
+//    let car_header = CarHeader::new(vec![state_root], 1);
+//    let buffer: Arc<RwLock<Vec<u8>>> = Default::default();
+//    let buffer_cloned = buffer.clone();
+//    let write_task = async_std::task::spawn(async move {
+//        car_header.write_stream_async(&mut *buffer_cloned.write().await, &mut rx).await.unwrap()
+//    });
+
+//    for cid in (&store).traced.borrow().iter() {
+//        tx.send((cid.clone(), store.base.get(cid).unwrap().unwrap())).await.unwrap();
+//    }
+
+//    drop(tx);
+//    write_task.await;
+
+//    let car_bytes = buffer.read().await.clone();
+
+//    let mut gz_car_bytes: Vec<u8> = Default::default();
+//    let mut gz_encoder = GzEncoder::new(car_bytes.reader(), Compression::new(9));
+//    gz_encoder.read_to_end(&mut gz_car_bytes).unwrap();
+
+//    let mut gz_decoder = GzDecoder::new(gz_car_bytes.as_slice());
+
+//    let mut car_bytes: Vec<u8> = Default::default();
+//    gz_decoder.read_to_end(&mut car_bytes).unwrap();
+
+//    println!("gz_car_bytes: {:?}", gz_car_bytes);
+
+//    (pre_state_root, post_state_root, message, receipt, gz_car_bytes)
+//}
 
 pub fn compute_address_create(from: &EthAddress, nonce: u64) -> EthAddress {
     let mut stream = rlp::RlpStream::new();

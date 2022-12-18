@@ -1,18 +1,19 @@
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 
-use crate::util::get_code_cid_map;
 use crate::{
     is_create_contract, string_to_big_int, string_to_bytes, string_to_eth_address,
     EvmContractContext, U256_to_bytes,
 };
 use cid::multihash::MultihashDigest;
 use cid::Cid;
+use fil_actor_account::State as AccountState;
 use fil_actor_eam::EthAddress;
 use fil_actor_evm::interpreter::system::StateKamt;
 use fil_actor_evm::interpreter::{StatusCode, U256};
 use fil_actor_evm::state::State;
 use fil_actor_init::State as InitState;
+use fil_actor_reward::State as RewardState;
 use fil_actor_system::State as SystemState;
 use fil_actors_runtime::runtime::builtins::Type;
 use fil_actors_runtime::test_utils::{ACTOR_CODES, EAM_ACTOR_CODE_ID};
@@ -20,14 +21,16 @@ use fil_actors_runtime::{
     runtime::EMPTY_ARR_CID, ActorError, AsActorError, EAM_ACTOR_ADDR, EAM_ACTOR_ID,
     INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR,
 };
+use fil_actors_runtime::{BURNT_FUNDS_ACTOR_ADDR, REWARD_ACTOR_ADDR};
 use fvm_ipld_blockstore::{Block, Blockstore};
 use fvm_ipld_encoding::{strict_bytes, tuple::*, Cbor, CborStore, RawBytes};
-use fvm_ipld_hamt::{BytesKey, Hamt, Sha256};
+use fvm_ipld_hamt::Hamt;
 use fvm_ipld_kamt::Config as KamtConfig;
 use fvm_shared::address::Payload;
 use fvm_shared::crypto::hash::SupportedHashes;
 use fvm_shared::error::ExitCode;
 use fvm_shared::message::Message;
+use fvm_shared::sector::StoragePower;
 use fvm_shared::HAMT_BIT_WIDTH;
 use fvm_shared::{address::Address, econ::TokenAmount, MethodNum, IPLD_RAW, METHOD_SEND};
 use multihash::{Code, MultihashGeneric};
@@ -143,34 +146,27 @@ where
 {
     store: &'bs BS,
     state_root: RefCell<Cid>,
+    actor_codes: BTreeMap<Type, Cid>,
 }
 
 impl<'bs, BS> Mock<'bs, BS>
 where
     BS: Blockstore,
 {
-    pub fn new(store: &'bs BS) -> Self {
+    pub fn new(store: &'bs BS, actor_codes: BTreeMap<Type, Cid>) -> Self {
         let mut actors = Hamt::<&BS, Actor>::new_with_bit_width(store, HAMT_BIT_WIDTH);
         let state_root = actors.flush().unwrap();
-        Self { store, state_root: RefCell::new(state_root) }
+        Self { store, state_root: RefCell::new(state_root), actor_codes }
     }
 
     pub fn mock_builtin_actor(&mut self) -> () {
-        let map = get_code_cid_map().unwrap();
-
         // system
         let sys_st = SystemState::new(self.store).unwrap();
         let head_cid = self.store.put_cbor(&sys_st, multihash::Code::Blake2b256).unwrap();
         let faucet_total = TokenAmount::from_whole(1_000_000_000i64);
         self.set_actor(
             SYSTEM_ACTOR_ADDR,
-            actor(
-                map.get(&(Type::System as u32)).unwrap().clone(),
-                head_cid,
-                0,
-                faucet_total,
-                None,
-            ),
+            actor(self.get_actor_code(Type::System), head_cid, 0, faucet_total, None),
         );
 
         //init
@@ -179,15 +175,30 @@ where
         let faucet_total = TokenAmount::from_whole(1_000_000_000i64);
         self.set_actor(
             INIT_ACTOR_ADDR,
-            actor(map.get(&(Type::Init as u32)).unwrap().clone(), head_cid, 0, faucet_total, None),
+            actor(self.get_actor_code(Type::Init), head_cid, 0, faucet_total, None),
+        );
+
+        // reward
+        let reward_total = TokenAmount::from_whole(1_100_000_000i64);
+        let reward_head = self.put_store(&RewardState::new(StoragePower::zero()));
+        self.set_actor(
+            REWARD_ACTOR_ADDR,
+            actor(self.get_actor_code(Type::Reward), reward_head, 0, reward_total, None),
         );
 
         // Ethereum Address Manager
         self.set_actor(
             EAM_ACTOR_ADDR,
+            actor(self.get_actor_code(Type::EAM), EMPTY_ARR_CID, 0, TokenAmount::zero(), None),
+        );
+
+        // burnt funds
+        let burnt_funds_head = self.put_store(&AccountState { address: BURNT_FUNDS_ACTOR_ADDR });
+        self.set_actor(
+            BURNT_FUNDS_ACTOR_ADDR,
             actor(
-                map.get(&(Type::EAM as u32)).unwrap().clone(),
-                EMPTY_ARR_CID,
+                self.get_actor_code(Type::Account),
+                burnt_funds_head,
                 0,
                 TokenAmount::zero(),
                 None,
@@ -195,8 +206,12 @@ where
         );
     }
 
-    pub fn mock_embryo_address_actor(&mut self, addr: Address, balance: TokenAmount) -> () {
-        let map = get_code_cid_map().unwrap();
+    pub fn mock_embryo_address_actor(
+        &mut self,
+        addr: Address,
+        balance: TokenAmount,
+        nonce: u64,
+    ) -> () {
         let mut id_addr = Address::new_id(0);
         self.mutate_state(INIT_ACTOR_ADDR, |st: &mut InitState| {
             let (addr_id, exist) = st.map_addresses_to_id(self.store, &addr, None).unwrap();
@@ -205,13 +220,7 @@ where
         });
         self.set_actor(
             id_addr,
-            actor(
-                map.get(&(Type::Embryo as u32)).unwrap().clone(),
-                EMPTY_ARR_CID,
-                0,
-                balance,
-                Some(addr),
-            ),
+            actor(self.get_actor_code(Type::Embryo), EMPTY_ARR_CID, nonce, balance, Some(addr)),
         );
     }
 
@@ -392,44 +401,6 @@ where
         st.resolve_address::<BS>(self.store, addr).unwrap()
     }
 
-    pub fn to_message(&self, context: &EvmContractContext) -> Message {
-        let from = Address::new_delegated(10, &string_to_eth_address(&context.from).0).unwrap();
-        let to: Address;
-        let method_num: MethodNum;
-        let mut params = RawBytes::serialize(ContractParams(vec![0u8; 0])).unwrap();
-        if is_create_contract(&context.to) {
-            to = Address::new_id(10);
-            method_num = fil_actor_eam::Method::Create as u64;
-            let params2 = fil_actor_eam::CreateParams {
-                initcode: string_to_bytes(&context.input),
-                nonce: context.nonce,
-            };
-            params = RawBytes::serialize(params2).unwrap();
-        } else {
-            to = Address::new_delegated(10, &string_to_eth_address(&context.to).0).unwrap();
-            if context.input.len() > 0 {
-                params =
-                    RawBytes::serialize(ContractParams(string_to_bytes(&context.input))).unwrap();
-                method_num = fil_actor_evm::Method::InvokeContract as u64
-            } else {
-                method_num = METHOD_SEND;
-            }
-        }
-        Message {
-            version: 0,
-            from,
-            to,
-            sequence: context.nonce,
-            value: TokenAmount::from_atto(string_to_big_int(&context.value.hex)),
-            method_num,
-            params,
-            //TODO mock gas
-            gas_limit: 999900,
-            gas_fee_cap: TokenAmount::from_nano(1000000),
-            gas_premium: TokenAmount::from_nano(1000000),
-        }
-    }
-
     pub fn mutate_state<C, F>(&mut self, addr: Address, f: F)
     where
         C: Cbor,
@@ -440,6 +411,47 @@ where
         f(&mut st);
         a.head = self.store.put_cbor(&st, Code::Blake2b256).unwrap();
         self.set_actor(addr, a);
+    }
+
+    pub fn get_actor_code(&self, actor_type: Type) -> Cid {
+        self.actor_codes.get(&actor_type).unwrap().clone()
+    }
+}
+
+pub fn to_message(context: &EvmContractContext) -> Message {
+    let from = Address::new_delegated(10, &string_to_eth_address(&context.from).0).unwrap();
+    let to: Address;
+    let method_num: MethodNum;
+    let mut params = RawBytes::serialize(ContractParams(vec![0u8; 0])).unwrap();
+    if is_create_contract(&context.to) {
+        to = Address::new_id(10);
+        method_num = fil_actor_eam::Method::Create as u64;
+        let params2 = fil_actor_eam::CreateParams {
+            initcode: string_to_bytes(&context.input),
+            nonce: context.nonce,
+        };
+        params = RawBytes::serialize(params2).unwrap();
+    } else {
+        to = Address::new_delegated(10, &string_to_eth_address(&context.to).0).unwrap();
+        if context.input.len() > 0 {
+            params = RawBytes::serialize(ContractParams(string_to_bytes(&context.input))).unwrap();
+            method_num = fil_actor_evm::Method::InvokeContract as u64
+        } else {
+            method_num = METHOD_SEND;
+        }
+    }
+    Message {
+        version: 0,
+        from,
+        to,
+        sequence: context.nonce,
+        value: TokenAmount::from_atto(string_to_big_int(&context.value.hex)),
+        method_num,
+        params,
+        //TODO mock gas
+        gas_limit: 233863,
+        gas_fee_cap: TokenAmount::from_nano(1000000),
+        gas_premium: TokenAmount::from_nano(1000000),
     }
 }
 

@@ -5,6 +5,7 @@ use bytes::Buf;
 use fil_actor_eam::EthAddress;
 use fil_actor_evm::interpreter::U256;
 use fil_actors_runtime::runtime::builtins::Type;
+use fil_actors_runtime::test_utils::ACTOR_CODES;
 use fil_actors_runtime::{EAM_ACTOR_ADDR, EAM_ACTOR_ID, INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR};
 use flate2::bufread::GzDecoder;
 use flate2::bufread::GzEncoder;
@@ -23,13 +24,13 @@ use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
-use test_tvx::export_test_vector_file;
-use test_tvx::mock_single_actors::{print_actor_state, Mock};
+use test_tvx::mock_single_actors::{print_actor_state, to_message, Mock};
 use test_tvx::tracing_blockstore::TracingBlockStore;
 use test_tvx::{
-    compute_address_create, export, is_create_contract, string_to_U256, string_to_bytes,
+    compute_address_create, is_create_contract, string_to_U256, string_to_bytes,
     string_to_eth_address, EvmContractInput, EvmContractState,
 };
+use test_tvx::{export_test_vector_file, load_evm_constract_input};
 use test_vm::util::apply_ok;
 use test_vm::FAUCET_ROOT_KEY;
 
@@ -68,7 +69,7 @@ fn evm_create_test() {
 #[async_std::test]
 async fn mock_single_actor_blockstore() {
     let store = TracingBlockStore::new(MemoryBlockstore::new());
-    let mut mock = Mock::new(&store);
+    let mut mock = Mock::new(&store, ACTOR_CODES.clone());
     mock.mock_builtin_actor();
 
     let eth_addr = Address::new_delegated(
@@ -76,7 +77,7 @@ async fn mock_single_actor_blockstore() {
         &string_to_eth_address("0x443c0c6F6Cb301B49eE5E9Be07B867378e73Fb54").0,
     )
     .unwrap();
-    mock.mock_embryo_address_actor(eth_addr, TokenAmount::zero());
+    mock.mock_embryo_address_actor(eth_addr, TokenAmount::zero(), 0);
 
     let (tx, mut rx) = bounded(100);
 
@@ -110,10 +111,6 @@ async fn mock_single_actor_blockstore() {
     let car_reader = Cursor::new(car_bytes);
     let test_store = MemoryBlockstore::new();
     load_car(&test_store, car_reader).await.unwrap();
-
-    // An empty built-in actors manifest.
-    // let manifest_cid = { store.put_cbor(&Manifest::DUMMY_CODES, Code::Blake2b256).unwrap() };
-    // let actors_cid = store.put_cbor(&(1, manifest_cid), Code::Blake2b256).unwrap();
 
     // let vm = test_vm::VM::new(&store.base);
     let vm = test_vm::VM::new(&test_store);
@@ -152,6 +149,36 @@ async fn exec_export() {
 }
 
 #[test]
+fn exec_load_evm_constract_input() {
+    let input: EvmContractInput =
+        serde_json::from_str(include_str!("contracts/contract2.json")).unwrap();
+    let store = MemoryBlockstore::new();
+    let (pre_state_root, _) = load_evm_constract_input(&store, ACTOR_CODES.clone(), &input);
+
+    let message = to_message(&input.context);
+
+    let vm = test_vm::VM::new(&store);
+    vm.state_root.replace(pre_state_root);
+
+    let call_result = vm
+        .apply_message(
+            message.from,
+            message.to,
+            message.value,
+            fil_actor_evm::Method::InvokeContract as u64,
+            ContractParams(message.params.into()),
+        )
+        .unwrap();
+    println!("{:?}", call_result);
+
+    let BytesDe(return_value) =
+        call_result.ret.deserialize().expect("failed to deserialize results");
+    let result = hex::encode(return_value);
+
+    assert_eq!(result, input.context.return_result);
+}
+
+#[test]
 fn exec_contract() {
     let inputs: [EvmContractInput; 3] = [
         serde_json::from_str(include_str!("contracts/contract1.json")).unwrap(),
@@ -160,12 +187,12 @@ fn exec_contract() {
     ];
     for input in inputs {
         let store = MemoryBlockstore::new();
-        let mut mock = Mock::new(&store);
+        let mut mock = Mock::new(&store, ACTOR_CODES.clone());
         mock.mock_builtin_actor();
 
         let from =
             Address::new_delegated(10, &string_to_eth_address(&input.context.from).0).unwrap();
-        mock.mock_embryo_address_actor(from, TokenAmount::zero());
+        mock.mock_embryo_address_actor(from, TokenAmount::zero(), 0);
 
         for (eth_addr, state) in input.states {
             let eth_addr = string_to_eth_address(&eth_addr);
@@ -241,7 +268,7 @@ fn exec_contract_1() {
     let input: EvmContractInput =
         serde_json::from_str(include_str!("contracts/contract1.json")).unwrap();
     let store = MemoryBlockstore::new();
-    let mut mock = Mock::new(&store);
+    let mut mock = Mock::new(&store, ACTOR_CODES.clone());
     mock.mock_builtin_actor();
 
     let from = Address::new_delegated(
@@ -249,7 +276,7 @@ fn exec_contract_1() {
         &string_to_eth_address("0x443c0c6F6Cb301B49eE5E9Be07B867378e73Fb54").0,
     )
     .unwrap();
-    mock.mock_embryo_address_actor(from, TokenAmount::zero());
+    mock.mock_embryo_address_actor(from, TokenAmount::zero(), 0);
 
     let vm = test_vm::VM::new(&store);
     vm.state_root.replace(mock.get_state_root());
@@ -285,11 +312,11 @@ fn exec_contract_2() {
         serde_json::from_str(include_str!("contracts/contract2.json")).unwrap();
 
     let store = MemoryBlockstore::new();
-    let mut mock = Mock::new(&store);
+    let mut mock = Mock::new(&store, ACTOR_CODES.clone());
     mock.mock_builtin_actor();
 
     let from = Address::new_delegated(10, &string_to_eth_address(&input.context.from).0).unwrap();
-    mock.mock_embryo_address_actor(from, TokenAmount::zero());
+    mock.mock_embryo_address_actor(from, TokenAmount::zero(), 0);
 
     let to = Address::new_delegated(10, &string_to_eth_address(&input.context.to).0).unwrap();
     mock.mock_evm_actor(to, TokenAmount::zero());
