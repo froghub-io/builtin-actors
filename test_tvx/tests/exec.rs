@@ -143,9 +143,12 @@ async fn mock_single_actor_blockstore() {
 async fn exec_export() {
     let input: EvmContractInput =
         serde_json::from_str(include_str!("contracts/contract2.json")).unwrap();
-    export_test_vector_file(input, Path::new("constract2_test_vector.json").to_path_buf())
-        .await
-        .unwrap();
+    export_test_vector_file(
+        input,
+        Path::new("/Users/zhenghe/Downloads/constract2_test_vector.json").to_path_buf(),
+    )
+    .await
+    .unwrap();
 }
 
 #[test]

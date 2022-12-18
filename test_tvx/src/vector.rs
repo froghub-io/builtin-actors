@@ -83,9 +83,8 @@ pub struct TestVector {
     pub preconditions: PreConditions,
     pub apply_messages: Vec<ApplyMessage>,
     pub postconditions: PostConditions,
-
-    #[serde(default)]
-    pub randomness: Randomness,
+    // #[serde(default)]
+    // pub randomness: Randomness,
 }
 
 mod base64_bytes {

@@ -1,3 +1,4 @@
+use crate::mock_single_actors::Actor;
 use crate::mock_single_actors::Mock;
 use crate::tracing_blockstore::TracingBlockStore;
 use async_std::channel::bounded;
@@ -9,6 +10,8 @@ use cid::multihash::MultihashDigest;
 use cid::Cid;
 use fil_actor_eam::EthAddress;
 use fil_actor_evm::interpreter::U256;
+use fil_actors_runtime::runtime::EMPTY_ARR_CID;
+use fil_actors_runtime::INIT_ACTOR_ADDR;
 use flate2::bufread::GzDecoder;
 use flate2::bufread::GzEncoder;
 use flate2::Compression;
@@ -16,6 +19,7 @@ use fvm_ipld_blockstore::{Blockstore, MemoryBlockstore};
 use fvm_ipld_car::CarHeader;
 use fvm_ipld_encoding::Cbor;
 use fvm_ipld_encoding::RawBytes;
+use fvm_ipld_hamt::Hamt;
 use fvm_shared::address::Address;
 use fvm_shared::bigint::{BigInt, Integer};
 use fvm_shared::clock::ChainEpoch;
@@ -26,6 +30,7 @@ use fvm_shared::message::Message;
 use fvm_shared::randomness::RANDOMNESS_LENGTH;
 use fvm_shared::receipt::Receipt;
 use fvm_shared::version::NetworkVersion;
+use fvm_shared::HAMT_BIT_WIDTH;
 use num_traits::Zero;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -71,7 +76,7 @@ pub async fn export_test_vector_file(input: EvmContractInput, path: PathBuf) -> 
             state_tree: StateTreeVector { root_cid: post_state_root },
             receipts: vec![receipt],
         },
-        randomness: fvm_shared::randomness::Randomness(vec![0u8; RANDOMNESS_LENGTH]),
+        // randomness: fvm_shared::randomness::Randomness(vec![0u8; RANDOMNESS_LENGTH]),
     };
 
     let output = File::create(&path)?;
@@ -85,12 +90,20 @@ pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Receipt, Vec
     mock.mock_builtin_actor();
 
     let from = Address::new_delegated(10, &string_to_eth_address(&input.context.from).0).unwrap();
-    mock.mock_embryo_address_actor(from, TokenAmount::zero());
+    //TODO balance mock
+    mock.mock_embryo_address_actor(from, TokenAmount::from_whole(10000));
+    println!(
+        "mock from_addr: {:?}, {:?}",
+        from.to_string(),
+        mock.normalize_address(&from).unwrap().to_string()
+    );
 
     // preconditions
     for (eth_addr, state) in &input.states {
         let eth_addr = string_to_eth_address(&eth_addr);
         let to = Address::new_delegated(10, &eth_addr.0).unwrap();
+        println!("mock eth_addr: {:?}", to.to_string());
+
         if is_create_contract(&input.context.to)
             && eth_addr.eq(&compute_address_create(
                 &string_to_eth_address(&input.context.from),
@@ -111,7 +124,11 @@ pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Receipt, Vec
         mock.mock_evm_actor_state(to, storage, Some(bytecode));
     }
     let pre_state_root = mock.get_state_root();
+    let pre_state_root = mock.put_store(&(5, pre_state_root, EMPTY_ARR_CID));
     println!("pre_state_root: {:?}", pre_state_root);
+
+    let init_actor = mock.get_actor(Address::new_id(1)).unwrap();
+    println!("init_actor: {:?}, key:{:?}", init_actor, INIT_ACTOR_ADDR.to_bytes());
 
     // postconditions
     for (eth_addr, state) in &input.states {
@@ -144,6 +161,7 @@ pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Receipt, Vec
     }
 
     let post_state_root = mock.get_state_root();
+    let post_state_root = mock.put_store(&(5, post_state_root, EMPTY_ARR_CID));
     println!("post_state_root: {:?}", post_state_root);
 
     let message = mock.to_message(&input.context);

@@ -1,31 +1,38 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
+use crate::util::get_code_cid_map;
+use crate::{
+    is_create_contract, string_to_big_int, string_to_bytes, string_to_eth_address,
+    EvmContractContext, U256_to_bytes,
+};
+use cid::multihash::MultihashDigest;
 use cid::Cid;
 use fil_actor_eam::EthAddress;
+use fil_actor_evm::interpreter::system::StateKamt;
+use fil_actor_evm::interpreter::{StatusCode, U256};
+use fil_actor_evm::state::State;
 use fil_actor_init::State as InitState;
 use fil_actor_system::State as SystemState;
-use fil_actors_runtime::{runtime::EMPTY_ARR_CID, INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR, EAM_ACTOR_ADDR, EAM_ACTOR_ID, AsActorError, ActorError};
+use fil_actors_runtime::runtime::builtins::Type;
+use fil_actors_runtime::test_utils::{ACTOR_CODES, EAM_ACTOR_CODE_ID};
+use fil_actors_runtime::{
+    runtime::EMPTY_ARR_CID, ActorError, AsActorError, EAM_ACTOR_ADDR, EAM_ACTOR_ID,
+    INIT_ACTOR_ADDR, SYSTEM_ACTOR_ADDR,
+};
 use fvm_ipld_blockstore::{Block, Blockstore};
-use fvm_ipld_encoding::{tuple::*, Cbor, CborStore, RawBytes, strict_bytes};
+use fvm_ipld_encoding::{strict_bytes, tuple::*, Cbor, CborStore, RawBytes};
 use fvm_ipld_hamt::{BytesKey, Hamt, Sha256};
-use fvm_shared::{address::Address, econ::TokenAmount, IPLD_RAW, MethodNum, METHOD_SEND};
+use fvm_ipld_kamt::Config as KamtConfig;
+use fvm_shared::address::Payload;
 use fvm_shared::crypto::hash::SupportedHashes;
 use fvm_shared::error::ExitCode;
 use fvm_shared::message::Message;
+use fvm_shared::HAMT_BIT_WIDTH;
+use fvm_shared::{address::Address, econ::TokenAmount, MethodNum, IPLD_RAW, METHOD_SEND};
 use multihash::{Code, MultihashGeneric};
-use fil_actor_evm::interpreter::{StatusCode, U256};
-use fil_actor_evm::state::State;
-use fil_actors_runtime::runtime::builtins::Type;
-use fil_actors_runtime::test_utils::{ACTOR_CODES, EAM_ACTOR_CODE_ID};
-use crate::{EvmContractContext, is_create_contract, string_to_big_int, string_to_bytes, string_to_eth_address, U256_to_bytes};
-use serde::{Deserialize, Serialize};
-use fil_actor_evm::interpreter::system::StateKamt;
-use fvm_ipld_kamt::Config as KamtConfig;
-use cid::multihash::MultihashDigest;
-use fvm_shared::address::Payload;
 use num_traits::Zero;
-use crate::util::get_code_cid_map;
+use serde::{Deserialize, Serialize};
 
 lazy_static::lazy_static! {
     // The Solidity compiler creates contiguous array item keys.
@@ -76,7 +83,7 @@ pub fn actor(
 
 pub fn print_actor_state<BS: Blockstore>(state_root: Cid, store: &BS) {
     println!("--- actor state ---");
-    let actors = Hamt::<&BS, Actor, BytesKey, Sha256>::load(&state_root, store).unwrap();
+    let actors = Hamt::<&BS, Actor>::load(&state_root, store).unwrap();
     actors.for_each(|_, v| {
         let state_root = v.head;
         let store = store.clone();
@@ -143,7 +150,7 @@ where
     BS: Blockstore,
 {
     pub fn new(store: &'bs BS) -> Self {
-        let mut actors = Hamt::<&BS, Actor, BytesKey, Sha256>::new(&store);
+        let mut actors = Hamt::<&BS, Actor>::new_with_bit_width(store, HAMT_BIT_WIDTH);
         let state_root = actors.flush().unwrap();
         Self { store, state_root: RefCell::new(state_root) }
     }
@@ -157,7 +164,13 @@ where
         let faucet_total = TokenAmount::from_whole(1_000_000_000i64);
         self.set_actor(
             SYSTEM_ACTOR_ADDR,
-            actor(map.get(&(Type::System as u32)).unwrap().clone(), head_cid, 0, faucet_total, None),
+            actor(
+                map.get(&(Type::System as u32)).unwrap().clone(),
+                head_cid,
+                0,
+                faucet_total,
+                None,
+            ),
         );
 
         //init
@@ -172,7 +185,13 @@ where
         // Ethereum Address Manager
         self.set_actor(
             EAM_ACTOR_ADDR,
-            actor(map.get(&(Type::EAM as u32)).unwrap().clone(), EMPTY_ARR_CID, 0, TokenAmount::zero(), None),
+            actor(
+                map.get(&(Type::EAM as u32)).unwrap().clone(),
+                EMPTY_ARR_CID,
+                0,
+                TokenAmount::zero(),
+                None,
+            ),
         );
     }
 
@@ -186,7 +205,13 @@ where
         });
         self.set_actor(
             id_addr,
-            actor(map.get(&(Type::Embryo as u32)).unwrap().clone(), EMPTY_ARR_CID, 0, balance, Some(addr)),
+            actor(
+                map.get(&(Type::Embryo as u32)).unwrap().clone(),
+                EMPTY_ARR_CID,
+                0,
+                balance,
+                Some(addr),
+            ),
         );
     }
 
@@ -194,13 +219,20 @@ where
         let mut id_addr = Address::new_id(0);
         let robust_address = Address::new_actor(&addr.to_bytes());
         self.mutate_state(INIT_ACTOR_ADDR, |st: &mut InitState| {
-            let (addr_id, exist) = st.map_addresses_to_id(self.store, &robust_address, Some(&addr)).unwrap();
+            let (addr_id, exist) =
+                st.map_addresses_to_id(self.store, &robust_address, Some(&addr)).unwrap();
             assert!(!exist);
             id_addr = Address::new_id(addr_id);
         });
         self.set_actor(
             id_addr,
-            actor(ACTOR_CODES.get(&Type::EVM).cloned().unwrap().clone(), EMPTY_ARR_CID, 0, balance, Some(addr)),
+            actor(
+                ACTOR_CODES.get(&Type::EVM).cloned().unwrap().clone(),
+                EMPTY_ARR_CID,
+                0,
+                balance,
+                Some(addr),
+            ),
         );
     }
 
@@ -210,28 +242,37 @@ where
         Vec::from(&digest[..written as usize])
     }
 
-    pub fn mock_evm_actor_state(&mut self, addr: Address, storage: HashMap<U256, U256>, bytecode: Option<Vec<u8>>) {
+    pub fn mock_evm_actor_state(
+        &mut self,
+        addr: Address,
+        storage: HashMap<U256, U256>,
+        bytecode: Option<Vec<u8>>,
+    ) {
         let addr = self.normalize_address(&addr).unwrap();
         let state_root = self.get_actor(addr).unwrap().head;
-        let (mut slots, bytecode_cid, bytecode_hash, nonce) = match self.store.get_cbor::<State>(&state_root) {
-            Ok(res) => {
-                match res {
+        let (mut slots, bytecode_cid, bytecode_hash, nonce) =
+            match self.store.get_cbor::<State>(&state_root) {
+                Ok(res) => match res {
                     Some(state) => {
-                        let slots = StateKamt::load_with_config(&state.contract_state, self.store, KAMT_CONFIG.clone())
-                            .context_code(ExitCode::USR_ILLEGAL_STATE, "state not in blockstore").unwrap();
+                        let slots = StateKamt::load_with_config(
+                            &state.contract_state,
+                            self.store,
+                            KAMT_CONFIG.clone(),
+                        )
+                        .context_code(ExitCode::USR_ILLEGAL_STATE, "state not in blockstore")
+                        .unwrap();
                         (slots, Some(state.bytecode), Some(state.bytecode_hash), state.nonce)
-                    },
+                    }
                     None => {
                         let slots = StateKamt::new_with_config(self.store, KAMT_CONFIG.clone());
                         (slots, None, None, 1)
                     }
+                },
+                Err(_) => {
+                    let slots = StateKamt::new_with_config(self.store, KAMT_CONFIG.clone());
+                    (slots, None, None, 1)
                 }
-            },
-            Err(_) => {
-                let slots = StateKamt::new_with_config(self.store, KAMT_CONFIG.clone());
-                (slots, None, None, 1)
-            }
-        };
+            };
         let mut unchanged = true;
 
         for (key, value) in storage {
@@ -239,7 +280,9 @@ where
                 slots.delete(&key).map(|v| v.is_some())
             } else {
                 slots.set(key, value).map(|v| v != Some(value))
-            }.map_err(|e| StatusCode::InternalError(e.to_string())).unwrap();
+            }
+            .map_err(|e| StatusCode::InternalError(e.to_string()))
+            .unwrap();
             if changed {
                 unchanged = false;
             }
@@ -249,18 +292,24 @@ where
             let code_hash = multihash::Multihash::wrap(
                 SupportedHashes::Keccak256 as u64,
                 &self.hash(SupportedHashes::Keccak256, &bytecode),
-            ).context_code(ExitCode::USR_ILLEGAL_STATE, "failed to hash bytecode with keccak").unwrap();
-            let bytecode_cid = self.store
+            )
+            .context_code(ExitCode::USR_ILLEGAL_STATE, "failed to hash bytecode with keccak")
+            .unwrap();
+            let bytecode_cid = self
+                .store
                 .put(Code::Blake2b256, &Block::new(IPLD_RAW, bytecode))
-                .context_code(ExitCode::USR_ILLEGAL_STATE, "failed to write bytecode").unwrap();
+                .context_code(ExitCode::USR_ILLEGAL_STATE, "failed to write bytecode")
+                .unwrap();
             (code_hash, bytecode_cid)
         };
 
         let (bytecode_hash, bytecode) = if let Some(bytecode_cid) = bytecode_cid {
             if let Some(bytecode) = bytecode {
-                let old_bytecode = self.store
+                let old_bytecode = self
+                    .store
                     .get(&bytecode_cid)
-                    .context_code(ExitCode::USR_NOT_FOUND, "failed to read bytecode").unwrap()
+                    .context_code(ExitCode::USR_NOT_FOUND, "failed to read bytecode")
+                    .unwrap()
                     .expect("bytecode not in state tree");
                 if bytecode.eq(&old_bytecode) {
                     (bytecode_hash.unwrap(), bytecode_cid)
@@ -272,27 +321,34 @@ where
                 (bytecode_hash.unwrap(), bytecode_cid)
             }
         } else {
-            let bytecode = if let Some(bytecode) = bytecode { unchanged = false; bytecode } else { vec![0u8; 0] };
+            let bytecode = if let Some(bytecode) = bytecode {
+                unchanged = false;
+                bytecode
+            } else {
+                vec![0u8; 0]
+            };
             generate(bytecode)
         };
 
         if unchanged {
             return;
         }
-        let new_root = self.store
+        let new_root = self
+            .store
             .put_cbor(
                 &State {
                     bytecode,
                     bytecode_hash,
-                    contract_state: slots.flush().context_code(
-                        ExitCode::USR_ILLEGAL_STATE,
-                        "failed to flush contract state",
-                    ).unwrap(),
+                    contract_state: slots
+                        .flush()
+                        .context_code(ExitCode::USR_ILLEGAL_STATE, "failed to flush contract state")
+                        .unwrap(),
                     nonce,
                 },
                 Code::Blake2b256,
             )
-            .context_code(ExitCode::USR_ILLEGAL_STATE, "failed to write contract state").unwrap();
+            .context_code(ExitCode::USR_ILLEGAL_STATE, "failed to write contract state")
+            .unwrap();
 
         let mut a = self.get_actor(addr).unwrap();
         a.head = new_root;
@@ -321,17 +377,13 @@ where
     }
 
     pub fn set_actor(&mut self, actor_addr: Address, actor: Actor) -> () {
-        let mut actors =
-            Hamt::<&BS, Actor, BytesKey, Sha256>::load(&self.state_root.borrow(), self.store)
-                .unwrap();
+        let mut actors = Hamt::<&BS, Actor>::load(&self.state_root.borrow(), self.store).unwrap();
         actors.set(actor_addr.to_bytes().into(), actor).unwrap();
         self.state_root.replace(actors.flush().unwrap());
     }
 
     pub fn get_actor(&self, addr: Address) -> Option<Actor> {
-        let actors =
-            Hamt::<&BS, Actor, BytesKey, Sha256>::load(&self.state_root.borrow(), self.store)
-                .unwrap();
+        let actors = Hamt::<&BS, Actor>::load(&self.state_root.borrow(), self.store).unwrap();
         actors.get(&addr.to_bytes()).unwrap().cloned()
     }
 
@@ -350,13 +402,14 @@ where
             method_num = fil_actor_eam::Method::Create as u64;
             let params2 = fil_actor_eam::CreateParams {
                 initcode: string_to_bytes(&context.input),
-                nonce: context.nonce
+                nonce: context.nonce,
             };
             params = RawBytes::serialize(params2).unwrap();
         } else {
             to = Address::new_delegated(10, &string_to_eth_address(&context.to).0).unwrap();
             if context.input.len() > 0 {
-                params = RawBytes::serialize(ContractParams(string_to_bytes(&context.input))).unwrap();
+                params =
+                    RawBytes::serialize(ContractParams(string_to_bytes(&context.input))).unwrap();
                 method_num = fil_actor_evm::Method::InvokeContract as u64
             } else {
                 method_num = METHOD_SEND;
@@ -370,9 +423,10 @@ where
             value: TokenAmount::from_atto(string_to_big_int(&context.value.hex)),
             method_num,
             params,
-            gas_limit: 9999,
-            gas_fee_cap: TokenAmount::from_nano(0),
-            gas_premium: TokenAmount::from_nano(0),
+            //TODO mock gas
+            gas_limit: 999900,
+            gas_fee_cap: TokenAmount::from_nano(1000000),
+            gas_premium: TokenAmount::from_nano(1000000),
         }
     }
 
