@@ -1,4 +1,3 @@
-use crate::mock_single_actors::Actor;
 use crate::mock_single_actors::Mock;
 use crate::tracing_blockstore::TracingBlockStore;
 use async_std::channel::bounded;
@@ -58,14 +57,14 @@ mod util;
 mod vector;
 
 pub async fn export_test_vector_file(input: EvmContractInput, path: PathBuf) -> anyhow::Result<()> {
-    let actor_codes = get_code_cid_map().unwrap();
+    let actor_codes = get_code_cid_map()?;
     let store = TracingBlockStore::new(MemoryBlockstore::new());
 
-    let (pre_state_root, post_state_root) = load_evm_constract_input(&store, actor_codes, &input);
+    let (pre_state_root, post_state_root) = load_evm_contract_input(&store, actor_codes, &input)?;
     let pre_state_root =
-        store.put_cbor(&(5, pre_state_root, EMPTY_ARR_CID), Code::Blake2b256).unwrap();
+        store.put_cbor(&(5, pre_state_root, EMPTY_ARR_CID), Code::Blake2b256)?;
     let post_state_root =
-        store.put_cbor(&(5, post_state_root, EMPTY_ARR_CID), Code::Blake2b256).unwrap();
+        store.put_cbor(&(5, post_state_root, EMPTY_ARR_CID), Code::Blake2b256)?;
 
     //car_bytes
     let car_header = CarHeader::new(vec![pre_state_root, post_state_root], 1);
@@ -93,8 +92,7 @@ pub async fn export_test_vector_file(input: EvmContractInput, path: PathBuf) -> 
     //receipt
     let receipt = Receipt {
         exit_code: ExitCode::OK,
-        return_data: RawBytes::serialize(hex::decode(&input.context.return_result).unwrap())
-            .unwrap(),
+        return_data: RawBytes::serialize(hex::decode(&input.context.return_result)?)?,
         gas_used: 0,
         events_root: None,
     };
@@ -130,11 +128,11 @@ pub async fn export_test_vector_file(input: EvmContractInput, path: PathBuf) -> 
     Ok(())
 }
 
-pub fn load_evm_constract_input<BS>(
+pub fn load_evm_contract_input<BS>(
     store: &BS,
     actor_codes: BTreeMap<Type, Cid>,
     input: &EvmContractInput,
-) -> (Cid, Cid)
+) -> anyhow::Result<(Cid, Cid)>
 where
     BS: Blockstore,
 {
@@ -164,12 +162,12 @@ where
 
         let mut storage = HashMap::<U256, U256>::new();
         for (k, v) in &state.partial_storage_before {
-            let key = string_to_U256(&k);
-            let value = string_to_U256(&v);
+            let key = string_to_u256(&k);
+            let value = string_to_u256(&v);
             storage.insert(key, value);
         }
         let bytecode = string_to_bytes(&state.code);
-        mock.mock_evm_actor_state(to, storage, Some(bytecode));
+        mock.mock_evm_actor_state(&to, storage, Some(bytecode))?;
     }
     let pre_state_root = mock.get_state_root();
     println!("pre_state_root: {:?}", pre_state_root);
@@ -188,8 +186,8 @@ where
         }
         let mut storage = HashMap::<U256, U256>::new();
         for (k, v) in &state.partial_storage_after {
-            let key = string_to_U256(&k);
-            let value = string_to_U256(&v);
+            let key = string_to_u256(&k);
+            let value = string_to_u256(&v);
             storage.insert(key, value);
         }
         let bytecode = if is_create_contract(&input.context.to)
@@ -201,13 +199,13 @@ where
         } else {
             None
         };
-        mock.mock_evm_actor_state(to, storage, bytecode);
+        mock.mock_evm_actor_state(&to, storage, bytecode)?;
     }
 
     let post_state_root = mock.get_state_root();
     println!("post_state_root: {:?}", post_state_root);
 
-    return (pre_state_root, post_state_root);
+    return Ok((pre_state_root, post_state_root));
 }
 
 //pub async fn export(input: EvmContractInput) -> (Cid, Cid, Message, Receipt, Vec<u8>) {
@@ -345,7 +343,7 @@ pub fn hash(hasher: SupportedHashes, data: &[u8]) -> Vec<u8> {
     Vec::from(&digest[..written as usize])
 }
 
-pub fn string_to_U256(str: &str) -> U256 {
+pub fn string_to_u256(str: &str) -> U256 {
     let v = string_to_bytes(str);
     let mut r = [0u8; 32];
     r[32 - v.len()..32].copy_from_slice(&v);
@@ -387,7 +385,7 @@ pub fn string_to_bytes(str: &str) -> Vec<u8> {
     }
 }
 
-pub fn U256_to_bytes(u: &U256) -> Vec<u8> {
+pub fn u256_to_bytes(u: &U256) -> Vec<u8> {
     let mut v = vec![0u8; 32];
     (0..4).for_each(|i| {
         let e = hex::decode(hex::encode(u.0[3 - i].to_be_bytes())).unwrap();

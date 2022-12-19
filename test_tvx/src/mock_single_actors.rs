@@ -3,14 +3,14 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::{
     is_create_contract, string_to_big_int, string_to_bytes, string_to_eth_address,
-    EvmContractContext, U256_to_bytes,
+    EvmContractContext, u256_to_bytes,
 };
 use cid::multihash::MultihashDigest;
 use cid::Cid;
 use fil_actor_account::State as AccountState;
 use fil_actor_eam::EthAddress;
 use fil_actor_evm::interpreter::system::StateKamt;
-use fil_actor_evm::interpreter::{StatusCode, U256};
+use fil_actor_evm::interpreter::{Bytecode, StatusCode, U256};
 use fil_actor_evm::state::State;
 use fil_actor_init::State as InitState;
 use fil_actor_reward::State as RewardState;
@@ -84,9 +84,9 @@ pub fn actor(
     Actor { code, head, nonce, balance, predictable_address }
 }
 
-pub fn print_actor_state<BS: Blockstore>(state_root: Cid, store: &BS) {
+pub fn print_actor_state<BS: Blockstore>(state_root: Cid, store: &BS) -> anyhow::Result<()> {
     println!("--- actor state ---");
-    let actors = Hamt::<&BS, Actor>::load(&state_root, store).unwrap();
+    let actors = Hamt::<&BS, Actor>::load(&state_root, store)?;
     actors.for_each(|_, v| {
         let state_root = v.head;
         let store = store.clone();
@@ -105,31 +105,30 @@ pub fn print_actor_state<BS: Blockstore>(state_root: Cid, store: &BS) {
                                     "EVM actor with delegated address {} created not namespaced to the EAM {}",
                                     v.predictable_address.unwrap(), EAM_ACTOR_ID,
                                 ))),
-                            }.unwrap();
+                            }?;
                             let receiver_eth_addr = {
                                 let subaddr: [u8; 20] = delegated_addr.subaddress().try_into().map_err(|_| {
                                     ActorError::assertion_failed(format!(
                                         "expected 20 byte EVM address, found {} bytes",
                                         delegated_addr.subaddress().len()
                                     ))
-                                }).unwrap();
+                                })?;
                                 EthAddress(subaddr)
                             };
                             println!("eth_addr: {:?}", hex::encode(receiver_eth_addr.0));
                         }
                         let bytecode = store
                             .get(&state.bytecode)
-                            .context_code(ExitCode::USR_NOT_FOUND, "failed to read bytecode").unwrap()
+                            .context_code(ExitCode::USR_NOT_FOUND, "failed to read bytecode")?
                             .expect("bytecode not in state tree");
                         println!("bytecode: {:?}", hex::encode(bytecode));
                         let slots = StateKamt::load_with_config(&state.contract_state, store, KAMT_CONFIG.clone())
-                            .context_code(ExitCode::USR_ILLEGAL_STATE, "state not in blockstore").unwrap();
+                            .context_code(ExitCode::USR_ILLEGAL_STATE, "state not in blockstore")?;
                         slots.for_each(|k, v| {
-                                println!("--k: {:?}", hex::encode(U256_to_bytes(k)));
-                                println!("--v: {:?}", hex::encode(U256_to_bytes(v)));
+                                println!("--k: {:?}", hex::encode(u256_to_bytes(k)));
+                                println!("--v: {:?}", hex::encode(u256_to_bytes(v)));
                                 Ok(())
-                            })
-                            .unwrap();
+                            })?;
                     },
                     None => {}
                 }
@@ -137,7 +136,8 @@ pub fn print_actor_state<BS: Blockstore>(state_root: Cid, store: &BS) {
             Err(_) => {}
         }
         Ok(())
-    }).unwrap();
+    })?;
+    Ok(())
 }
 
 pub struct Mock<'bs, BS>
@@ -253,11 +253,11 @@ where
 
     pub fn mock_evm_actor_state(
         &mut self,
-        addr: Address,
+        addr: &Address,
         storage: HashMap<U256, U256>,
         bytecode: Option<Vec<u8>>,
-    ) {
-        let addr = self.normalize_address(&addr).unwrap();
+    ) -> anyhow::Result<()> {
+        let addr = self.normalize_address(addr).expect("failed to normalize address");
         let state_root = self.get_actor(addr).unwrap().head;
         let (mut slots, bytecode_cid, bytecode_hash, nonce) =
             match self.store.get_cbor::<State>(&state_root) {
@@ -340,7 +340,7 @@ where
         };
 
         if unchanged {
-            return;
+            return Ok(());
         }
         let new_root = self
             .store
@@ -362,6 +362,8 @@ where
         let mut a = self.get_actor(addr).unwrap();
         a.head = new_root;
         self.set_actor(addr, a);
+
+        Ok(())
     }
 
     pub fn get_state_root(&self) -> Cid {
@@ -454,15 +456,3 @@ pub fn to_message(context: &EvmContractContext) -> Message {
         gas_premium: TokenAmount::from_nano(1000000),
     }
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(transparent)]
-struct ContractParams(#[serde(with = "strict_bytes")] pub Vec<u8>);
-
-impl Cbor for ContractParams {}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(transparent)]
-struct ReturnData(#[serde(with = "strict_bytes")] pub Vec<u8>);
-
-impl Cbor for ReturnData {}
