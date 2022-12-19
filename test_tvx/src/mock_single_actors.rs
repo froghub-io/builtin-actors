@@ -422,7 +422,7 @@ pub fn to_message(context: &EvmContractContext) -> Message {
     let from = Address::new_delegated(10, &string_to_eth_address(&context.from).0).unwrap();
     let to: Address;
     let method_num: MethodNum;
-    let mut params = RawBytes::serialize(ContractParams(vec![0u8; 0])).unwrap();
+    let mut params = RawBytes::from(vec![0u8; 0]);
     if is_create_contract(&context.to) {
         to = Address::new_id(10);
         method_num = fil_actor_eam::Method::Create as u64;
@@ -434,7 +434,7 @@ pub fn to_message(context: &EvmContractContext) -> Message {
     } else {
         to = Address::new_delegated(10, &string_to_eth_address(&context.to).0).unwrap();
         if context.input.len() > 0 {
-            params = RawBytes::serialize(ContractParams(string_to_bytes(&context.input))).unwrap();
+            params = RawBytes::from(string_to_bytes(&context.input));
             method_num = fil_actor_evm::Method::InvokeContract as u64
         } else {
             method_num = METHOD_SEND;
