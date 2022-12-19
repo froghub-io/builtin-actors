@@ -236,7 +236,7 @@ where
         self.set_actor(
             id_addr,
             actor(
-                ACTOR_CODES.get(&Type::EVM).cloned().unwrap().clone(),
+                self.get_actor_code(Type::EVM),
                 EMPTY_ARR_CID,
                 0,
                 balance,
