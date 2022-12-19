@@ -7,6 +7,18 @@
             "type": "BigNumber",
             "hex": "0x00"
         },
+        "gas_limit": {
+            "type": "Uint64",
+            "hex": "0x4297275491"
+        },
+        "gas_fee_cap": {
+            "type": "BigNumber",
+            "hex": "0x1152921504606847000"
+        },
+        "gas_tip_cap": {
+            "type": "BigNumber",
+            "hex": "0x1152921504606847000"
+        },
         "nonce": 1,
         "block_number": 2,
         "timestamp": 1667910352,

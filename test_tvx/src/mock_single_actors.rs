@@ -1,10 +1,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 
-use crate::{
-    is_create_contract, string_to_big_int, string_to_bytes, string_to_eth_address,
-    EvmContractContext, u256_to_bytes,
-};
+use crate::{is_create_contract, string_to_big_int, string_to_bytes, string_to_eth_address, EvmContractContext, u256_to_bytes, string_to_i64};
 use cid::multihash::MultihashDigest;
 use cid::Cid;
 use fil_actor_account::State as AccountState;
@@ -450,10 +447,9 @@ pub fn to_message(context: &EvmContractContext) -> Message {
         value: TokenAmount::from_atto(string_to_big_int(&context.value.hex)),
         method_num,
         params,
-        //TODO mock gas
-        gas_limit: 233863,
-        gas_fee_cap: TokenAmount::from_nano(1000000),
-        gas_premium: TokenAmount::from_nano(1000000),
+        gas_limit: string_to_i64(&context.gas_limit.hex),
+        gas_fee_cap: TokenAmount::from_atto(string_to_big_int(&context.gas_fee_cap.hex)),
+        gas_premium: TokenAmount::from_atto(string_to_big_int(&context.gas_tip_cap.hex)),
     }
 }
 
