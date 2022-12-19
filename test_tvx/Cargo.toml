@@ -10,6 +10,9 @@ publish = false
 
 [lib]
 
+[[bin]]
+name = "eth-tvx"
+
 [dependencies]
 fil_builtin_actors_state = { version = "10.0.0-alpha.1", path = "../state"}
 fil_actors_runtime = { version = "10.0.0-alpha.1", path = "../runtime", features = [ "test_utils" ] }
@@ -67,12 +70,13 @@ async-std = { version = "1.9", features = ["attributes"] }
 tokio-stream = "0.1"
 flate2 = { version = "1.0" }
 base64 = "0.13.0"
+tokio = { version = "1.18", features = ["macros", "rt-multi-thread"] }
+ethers = { version = "1.0.2" }
 
 [dev-dependencies]
 cid = { version = "0.8.3", default-features = false, features = ["serde-codec"] }
 # multihash = { version = "0.16.1", default-features = false }
 test-case = "2.2.1"
-ethers = { version = "0.17.0", features = ["abigen"] }
 
 [features]
 m2-native = []
