@@ -5,24 +5,9 @@ use fvm_ipld_encoding::{strict_bytes, BytesDe, Cbor, RawBytes};
 use serde::{Deserialize, Serialize};
 use serde_tuple::*;
 use std::path::Path;
-use test_tvx::mock_single_actors::{print_actor_state, to_message};
+use test_tvx::mock_single_actors::{ContractParams, CreateParams, print_actor_state, to_message};
 use test_tvx::{compute_address_create, is_create_contract, string_to_eth_address, EvmContractInput};
 use test_tvx::{export_test_vector_file, load_evm_contract_input};
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(transparent)]
-struct ContractParams(#[serde(with = "strict_bytes")] pub Vec<u8>);
-
-impl Cbor for ContractParams {}
-
-#[derive(Serialize_tuple, Deserialize_tuple)]
-pub struct CreateParams {
-    #[serde(with = "strict_bytes")]
-    pub initcode: Vec<u8>,
-    pub nonce: u64,
-}
-
-impl Cbor for CreateParams {}
 
 #[test]
 fn evm_create_test() {
@@ -62,7 +47,7 @@ fn exec_contract() {
         vm.state_root.replace(pre_state_root);
 
         if is_create_contract(&input.context.to) {
-            let params2: fil_actor_eam::CreateParams = RawBytes::deserialize(&message.params).unwrap();
+            let params2: CreateParams = RawBytes::deserialize(&message.params).unwrap();
             let create_result = vm
                 .apply_message(
                     message.from,
@@ -80,7 +65,7 @@ fn exec_contract() {
                 create_result.message
             );
         } else {
-            let params:ContractParams = RawBytes::deserialize(&message.params.into()).unwrap();
+            let params: ContractParams = RawBytes::deserialize(&message.params.into()).unwrap();
             let call_result = vm
                 .apply_message(
                     message.from,

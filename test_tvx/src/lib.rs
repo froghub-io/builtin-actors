@@ -16,9 +16,10 @@ use flate2::bufread::GzEncoder;
 use flate2::Compression;
 use fvm_ipld_blockstore::{Blockstore, MemoryBlockstore};
 use fvm_ipld_car::CarHeader;
-use fvm_ipld_encoding::Cbor;
+use fvm_ipld_encoding::{BytesDe, BytesSer, Cbor};
 use fvm_ipld_encoding::CborStore;
 use fvm_ipld_encoding::RawBytes;
+use fvm_ipld_encoding::strict_bytes;
 use fvm_ipld_hamt::Hamt;
 use fvm_shared::address::Address;
 use fvm_shared::bigint::{BigInt, Integer};
@@ -92,7 +93,7 @@ pub async fn export_test_vector_file(input: EvmContractInput, path: PathBuf) -> 
     //receipt
     let receipt = Receipt {
         exit_code: ExitCode::OK,
-        return_data: RawBytes::serialize(hex::decode(&input.context.return_result)?)?,
+        return_data: RawBytes::serialize(BytesDe(hex::decode(&input.context.return_result)?))?,
         gas_used: 0,
         events_root: None,
     };

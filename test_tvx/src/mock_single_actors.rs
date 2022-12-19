@@ -428,7 +428,7 @@ pub fn to_message(context: &EvmContractContext) -> Message {
     if is_create_contract(&context.to) {
         to = Address::new_id(10);
         method_num = fil_actor_eam::Method::Create as u64;
-        let params2 = fil_actor_eam::CreateParams {
+        let params2 = CreateParams {
             initcode: string_to_bytes(&context.input),
             nonce: context.nonce,
         };
@@ -457,8 +457,17 @@ pub fn to_message(context: &EvmContractContext) -> Message {
     }
 }
 
+#[derive(Serialize_tuple, Deserialize_tuple)]
+pub struct CreateParams {
+    #[serde(with = "strict_bytes")]
+    pub initcode: Vec<u8>,
+    pub nonce: u64,
+}
+
+impl Cbor for CreateParams {}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(transparent)]
-struct ContractParams(#[serde(with = "strict_bytes")] pub Vec<u8>);
+pub struct ContractParams(#[serde(with = "strict_bytes")] pub Vec<u8>);
 
 impl Cbor for ContractParams {}
