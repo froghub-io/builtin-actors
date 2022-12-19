@@ -436,7 +436,7 @@ pub fn to_message(context: &EvmContractContext) -> Message {
     } else {
         to = Address::new_delegated(10, &string_to_eth_address(&context.to).0).unwrap();
         if context.input.len() > 0 {
-            params = RawBytes::from(string_to_bytes(&context.input));
+            params = RawBytes::serialize(ContractParams(string_to_bytes(&context.input))).unwrap();
             method_num = fil_actor_evm::Method::InvokeContract as u64
         } else {
             method_num = METHOD_SEND;
@@ -456,3 +456,9 @@ pub fn to_message(context: &EvmContractContext) -> Message {
         gas_premium: TokenAmount::from_nano(1000000),
     }
 }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(transparent)]
+struct ContractParams(#[serde(with = "strict_bytes")] pub Vec<u8>);
+
+impl Cbor for ContractParams {}

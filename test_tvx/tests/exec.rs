@@ -38,7 +38,7 @@ async fn exec_export() {
         serde_json::from_str(include_str!("contracts/contract2.json")).unwrap();
     export_test_vector_file(
         input,
-        Path::new("/Users/zhenghe/Downloads/constract2_test_vector.json").to_path_buf(),
+        Path::new("/Users/grw/Desktop/constract2_test_vector.json").to_path_buf(),
     )
     .await
     .unwrap();
@@ -80,13 +80,14 @@ fn exec_contract() {
                 create_result.message
             );
         } else {
+            let params:ContractParams = RawBytes::deserialize(&message.params.into()).unwrap();
             let call_result = vm
                 .apply_message(
                     message.from,
                     message.to,
                     message.value,
                     fil_actor_evm::Method::InvokeContract as u64,
-                    ContractParams(message.params.into()),
+                    params,
                 )
                 .unwrap();
             println!("{:?}", call_result);
