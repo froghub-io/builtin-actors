@@ -31,10 +31,10 @@ async fn exec_export() {
 
 #[test]
 fn exec_contract() {
-    let inputs: [EvmContractInput; 3] = [
-        serde_json::from_str(include_str!("contracts/contract1.json")).unwrap(),
+    let inputs: [EvmContractInput; 1] = [
+        // serde_json::from_str(include_str!("contracts/contract1.json")).unwrap(),
         serde_json::from_str(include_str!("contracts/contract2.json")).unwrap(),
-        serde_json::from_str(include_str!("contracts/contract3.json")).unwrap(),
+        // serde_json::from_str(include_str!("contracts/contract3.json")).unwrap(),
     ];
     for input in inputs {
         println!("--- input ---");

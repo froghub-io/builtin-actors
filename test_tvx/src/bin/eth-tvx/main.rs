@@ -6,6 +6,9 @@ use std::{
     collections::{BTreeMap, HashMap},
     convert::TryFrom,
 };
+use std::fs::File;
+use std::path::Path;
+use test_tvx::{EvmContractBalance, EvmContractContext, EvmContractInput, EvmContractState};
 
 const OP_SSTORE: &str = "SSTORE";
 const OP_SLOAD: &str = "SLOAD";
@@ -24,7 +27,7 @@ const OP_CREATE2: &str = "CREATE2";
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let tx_hash = "0x29c237b7eacede6b2a8060192ea7634b187382bc1117690d5e92d3b6824da4f2";
-    let tx_hash = H256::from_str(tx_hash).unwrap();
+    let tx_hash = H256::from_str(tx_hash)?;
 
     let provider = Provider::<Http>::try_from("http://localhost:8545")
         .expect("could not instantiate HTTP Provider");
@@ -36,7 +39,7 @@ async fn main() -> anyhow::Result<()> {
         .await?
         .unwrap();
 
-    let block_transactions = block.transactions;
+    let block_transactions = &block.transactions;
 
     let tx_from = transaction.from;
     let tx_callee = transaction
@@ -317,8 +320,24 @@ async fn main() -> anyhow::Result<()> {
         }
     }
 
-    println!("pre-transaction: {pre_storages:?}");
-    println!("post-transaction: {post_storages:?}");
+    let status =  if transaction_trace.failed { 0 } else { 1 };
+    let return_result = hex::encode(transaction_trace.return_value.to_vec());
+
+    let input = eth_tx_to_input(transaction,
+                                block,
+                                pre_storages,
+                                post_storages,
+                                pre_balances,
+                                post_balances,
+                                pre_codes,
+                                post_codes,
+                                status,
+                                return_result);
+    println!("input: {:?}", input);
+    let path = Path::new("/Users/grw/Desktop/constract2_test_vector.json").to_path_buf();
+    let output = File::create(&path).unwrap();
+    serde_json::to_writer_pretty(output, &input).unwrap();
+
     Ok(())
 }
 
@@ -326,4 +345,129 @@ fn decode_address(raw_address: U256) -> H160 {
     let mut bytes = [0; 32];
     raw_address.to_big_endian(&mut bytes);
     H160::from_slice(&bytes[12..])
+}
+
+
+fn push_adds<T>(adds: &mut Vec<Address> ,bmap: &BTreeMap<Address, T>) {
+    bmap.keys().for_each(|addr| {
+        if !adds.contains(addr) {
+            adds.push(addr.clone());
+        }
+    });
+}
+
+fn get_storage(addr: &Address, storages: &BTreeMap<Address, HashMap<U256, U256>>) -> HashMap<String, String> {
+    let bmap = storages.get(&addr);
+    let mut vmap = HashMap::new();
+    if let Some(bmap) = bmap {
+        for (k, v) in bmap {
+            vmap.insert(u256_to_str(k), u256_to_str(v));
+        }
+    }
+    vmap
+}
+
+fn get_balance(addr: &Address, balances: &BTreeMap<Address, U256>) -> String {
+    match balances.get(&addr) {
+        Some(v) => u256_to_str(v),
+        None => String::from("00")
+    }
+}
+
+fn get_code(addr: &Address, codes: &BTreeMap<Address, Bytes>) -> Option<String> {
+    match codes.get(&addr) {
+        Some(v) => {
+            Some(hex::encode(v.to_vec()))
+        },
+        None => None
+    }
+}
+
+fn get_eth_addr(addr: Option<Address>) -> String {
+    match addr {
+        Some(addr) => hex::encode(addr.0),
+        None => String::from("0x00")
+    }
+}
+
+fn u256_to_str(v: &U256) -> String {
+    let mut value = [0u8; 32];
+    v.to_big_endian(&mut value);
+    hex::encode(value)
+}
+
+fn h256_to_str(v: &H256) -> String {
+    hex::encode(v.0)
+}
+
+fn eth_tx_to_input(transaction: Transaction,
+                   block: Block<Transaction>,
+                   pre_storages: BTreeMap<Address, HashMap<U256, U256>>,
+                   post_storages: BTreeMap<Address, HashMap<U256, U256>>,
+                   pre_balances: BTreeMap<Address, U256>,
+                   post_balances: BTreeMap<Address, U256>,
+                   pre_codes: BTreeMap<Address, Bytes>,
+                   post_codes: BTreeMap<Address, Bytes>,
+                   status: usize,
+                   return_result: String) -> EvmContractInput {
+    let mut adds: Vec<Address> = Vec::new();
+    push_adds(&mut adds, &pre_storages);
+    push_adds(&mut adds, &post_storages);
+    push_adds(&mut adds, &pre_balances);
+    push_adds(&mut adds, &post_balances);
+    push_adds(&mut adds, &pre_codes);
+    push_adds(&mut adds, &post_codes);
+
+    let mut states = HashMap::<String, EvmContractState>::new();
+    let mut balances = HashMap::<String, EvmContractBalance>::new();
+    for addr in adds {
+        let eth_addr = get_eth_addr(Some(addr));
+        let pre_storage = get_storage(&addr, &pre_storages);
+        let post_storage = get_storage(&addr, &post_storages);
+        let pre_balance = get_balance(&addr, &pre_balances);
+        let post_balance = get_balance(&addr, &post_balances);
+        let pre_code = get_code(&addr, &pre_codes);
+        let post_code = get_code(&addr, &post_codes);
+        states.insert(eth_addr.clone(), EvmContractState {
+            pre_storage,
+            post_storage,
+            pre_code,
+            post_code
+        });
+        balances.insert(eth_addr, EvmContractBalance {
+            pre_balance,
+            post_balance
+        });
+    }
+
+    let mut transactions: Vec<String> = Vec::new();
+    for t in block.transactions {
+        transactions.push(match t.block_hash { Some(v) => h256_to_str(&v), None => String::from("00") });
+    }
+
+    let context: EvmContractContext = EvmContractContext {
+        chain_id: match transaction.chain_id { Some(v) => v.as_u64(), None => 0 },
+        from: get_eth_addr(Some(transaction.from)),
+        to: get_eth_addr(transaction.to),
+        input: hex::encode(transaction.input.to_vec()),
+        value: u256_to_str(&transaction.value),
+        gas_price: match transaction.gas_price { Some(v) => u256_to_str(&v), None => String::from("00") },
+        gas_limit: transaction.gas.as_u64(),
+        gas_fee_cap: match transaction.max_fee_per_gas { Some(v) => u256_to_str(&v), None => String::from("00") },
+        gas_tip_cap: match transaction.max_priority_fee_per_gas { Some(v) => u256_to_str(&v), None => String::from("00") },
+        block_number: match transaction.block_number { Some(v) => v.as_u64(), None => 0 },
+        timestamp: block.timestamp.as_usize(),
+        nonce: transaction.nonce.as_u64(),
+        block_hash: match transaction.block_hash { Some(v) => h256_to_str(&v), None => String::from("00") },
+        block_difficulty: block.difficulty.as_usize(),
+        status,
+        return_result
+    };
+
+    EvmContractInput {
+        states,
+        balances,
+        transactions,
+        context
+    }
 }

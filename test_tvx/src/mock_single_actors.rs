@@ -210,11 +210,19 @@ where
         nonce: u64,
     ) -> () {
         let mut id_addr = Address::new_id(0);
+        let mut flag = false;
         self.mutate_state(INIT_ACTOR_ADDR, |st: &mut InitState| {
-            let (addr_id, exist) = st.map_addresses_to_id(self.store, &addr, None).unwrap();
-            assert!(!exist);
-            id_addr = Address::new_id(addr_id);
+            match st.map_addresses_to_id(self.store, &addr, None) {
+                Ok((addr_id, exist)) => {
+                    flag = exist;
+                    id_addr = Address::new_id(addr_id);
+                },
+                Err(_) => flag = true
+            }
         });
+        if flag {
+            return;
+        }
         self.set_actor(
             id_addr,
             actor(self.get_actor_code(Type::Embryo), EMPTY_ARR_CID, nonce, balance, Some(addr)),
@@ -224,12 +232,19 @@ where
     pub fn mock_evm_actor(&mut self, addr: Address, balance: TokenAmount) {
         let mut id_addr = Address::new_id(0);
         let robust_address = Address::new_actor(&addr.to_bytes());
+        let mut flag = false;
         self.mutate_state(INIT_ACTOR_ADDR, |st: &mut InitState| {
-            let (addr_id, exist) =
-                st.map_addresses_to_id(self.store, &robust_address, Some(&addr)).unwrap();
-            assert!(!exist);
-            id_addr = Address::new_id(addr_id);
+            match st.map_addresses_to_id(self.store, &robust_address, Some(&addr)) {
+                Ok((addr_id, exist)) => {
+                    flag = exist;
+                    id_addr = Address::new_id(addr_id);
+                },
+                Err(_) => flag = true
+            }
         });
+        if flag {
+            return;
+        }
         self.set_actor(
             id_addr,
             actor(
@@ -444,12 +459,12 @@ pub fn to_message(context: &EvmContractContext) -> Message {
         from,
         to,
         sequence: context.nonce,
-        value: TokenAmount::from_atto(string_to_big_int(&context.value.hex)),
+        value: TokenAmount::from_atto(string_to_big_int(&context.value)),
         method_num,
         params,
-        gas_limit: string_to_i64(&context.gas_limit.hex),
-        gas_fee_cap: TokenAmount::from_atto(string_to_big_int(&context.gas_fee_cap.hex)),
-        gas_premium: TokenAmount::from_atto(string_to_big_int(&context.gas_tip_cap.hex)),
+        gas_limit: context.gas_limit as i64,
+        gas_fee_cap: TokenAmount::from_atto(string_to_big_int(&context.gas_fee_cap)),
+        gas_premium: TokenAmount::from_atto(string_to_big_int(&context.gas_tip_cap)),
     }
 }
 

@@ -145,6 +145,19 @@ pub async fn export_test_vector_file(input: EvmContractInput, path: PathBuf) -> 
     Ok(())
 }
 
+pub fn get_eth_addr_balance(eth_addr: &String, balances: &HashMap<String, EvmContractBalance>, pre: bool) -> TokenAmount {
+    match balances.get(eth_addr) {
+        Some(v) => {
+            if pre {
+                TokenAmount::from_atto(string_to_big_int(&v.pre_balance))
+            } else {
+                TokenAmount::from_atto(string_to_big_int(&v.post_balance))
+            }
+        },
+        None => TokenAmount::from_atto(0)
+    }
+}
+
 pub fn load_evm_contract_input<BS>(
     store: &BS,
     actor_codes: BTreeMap<Type, Cid>,
@@ -158,12 +171,11 @@ where
 
     let from = Address::new_delegated(10, &string_to_eth_address(&input.context.from).0).unwrap();
     let from_nonce = input.context.nonce;
-    //TODO balance
-    mock.mock_embryo_address_actor(from, TokenAmount::from_whole(100000000), from_nonce);
+    mock.mock_embryo_address_actor(from, get_eth_addr_balance(&input.context.from, &input.balances, true), from_nonce);
 
     // preconditions
-    for (eth_addr, state) in &input.states {
-        let eth_addr = string_to_eth_address(&eth_addr);
+    for (eth_addr_str, state) in &input.states {
+        let eth_addr = string_to_eth_address(&eth_addr_str);
         let to = Address::new_delegated(10, &eth_addr.0).unwrap();
         println!("mock eth_addr: {:?}", to.to_string());
 
@@ -175,16 +187,16 @@ where
         {
             continue;
         }
-        mock.mock_evm_actor(to, TokenAmount::zero());
+        mock.mock_evm_actor(to, get_eth_addr_balance(eth_addr_str, &input.balances, true));
 
         let mut storage = HashMap::<U256, U256>::new();
-        for (k, v) in &state.partial_storage_before {
+        for (k, v) in &state.pre_storage {
             let key = string_to_u256(&k);
             let value = string_to_u256(&v);
             storage.insert(key, value);
         }
-        let bytecode = string_to_bytes(&state.code);
-        mock.mock_evm_actor_state(&to, storage, Some(bytecode))?;
+        let bytecode = match &state.pre_code { Some(bytecode) => { Some(string_to_bytes(bytecode)) }, None => None };
+        mock.mock_evm_actor_state(&to, storage, bytecode)?;
     }
     let pre_state_root = mock.get_state_root();
     println!("pre_state_root: {:?}", pre_state_root);
@@ -193,29 +205,14 @@ where
     for (eth_addr, state) in &input.states {
         let eth_addr = string_to_eth_address(&eth_addr);
         let to = Address::new_delegated(10, &eth_addr.0).unwrap();
-        if is_create_contract(&input.context.to)
-            && eth_addr.eq(&compute_address_create(
-                &string_to_eth_address(&input.context.from),
-                input.context.nonce,
-            ))
-        {
-            mock.mock_evm_actor(to, TokenAmount::zero());
-        }
+        mock.mock_evm_actor(to, TokenAmount::zero());
         let mut storage = HashMap::<U256, U256>::new();
-        for (k, v) in &state.partial_storage_after {
+        for (k, v) in &state.post_storage {
             let key = string_to_u256(&k);
             let value = string_to_u256(&v);
             storage.insert(key, value);
         }
-        let bytecode = if is_create_contract(&input.context.to)
-            && eth_addr.eq(&compute_address_create(
-                &string_to_eth_address(&input.context.from),
-                input.context.nonce,
-            )) {
-            Some(string_to_bytes(&state.code))
-        } else {
-            None
-        };
+        let bytecode = match &state.post_code { Some(bytecode) => { Some(string_to_bytes(bytecode)) }, None => None };
         mock.mock_evm_actor_state(&to, storage, bytecode)?;
     }
 
@@ -306,40 +303,46 @@ pub fn is_create_contract(to: &str) -> bool {
     }
 }
 
+
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct EvmContractInput {
     pub states: HashMap<String, EvmContractState>,
+    pub balances: HashMap<String, EvmContractBalance>,
+    pub transactions: Vec<String>,
     pub context: EvmContractContext,
-}
-
-impl EvmContractInput {
-    pub fn find_state(&self, eth_addr: EthAddress) -> Option<&EvmContractState> {
-        for k in self.states.keys() {
-            if string_to_eth_address(k).eq(&eth_addr) {
-                return self.states.get(&k.clone());
-            }
-        }
-        None
-    }
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct EvmContractState {
-    pub partial_storage_before: HashMap<String, String>,
-    pub partial_storage_after: HashMap<String, String>,
-    pub code: String,
+    pub pre_storage: HashMap<String, String>,
+    pub post_storage: HashMap<String, String>,
+    pub pre_code: Option<String>,
+    pub post_code: Option<String>,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct EvmContractBalance {
+    pub pre_balance: String,
+    pub post_balance: String,
+}
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct EvmContractTransaction {
+    pub block_hash: String,
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct EvmContractContext {
+    pub chain_id: u64,
     pub from: String,
     pub to: String,
     pub input: String,
-    pub value: ValueType,
-    pub gas_limit: ValueType,
-    pub gas_fee_cap: ValueType,
-    pub gas_tip_cap: ValueType,
-    pub block_number: usize,
+    pub value: String,
+    pub gas_limit: u64,
+    pub gas_price: String,
+    pub gas_fee_cap: String,
+    pub gas_tip_cap: String,
+    pub block_number: u64,
     pub timestamp: usize,
     pub nonce: u64,
     pub block_hash: String,
@@ -347,11 +350,4 @@ pub struct EvmContractContext {
     pub status: usize,
     #[serde(alias = "return")]
     pub return_result: String,
-}
-
-#[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct ValueType {
-    #[serde(alias = "type")]
-    pub v_type: String,
-    pub hex: String,
 }
