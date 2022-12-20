@@ -1,5 +1,7 @@
 use crate::mock_single_actors::Mock;
 use crate::tracing_blockstore::TracingBlockStore;
+use crate::vector::RandomnessMatch;
+use crate::vector::RandomnessRule;
 use async_std::channel::bounded;
 use async_std::io::Cursor;
 use async_std::sync::RwLock;
@@ -16,10 +18,10 @@ use flate2::bufread::GzEncoder;
 use flate2::Compression;
 use fvm_ipld_blockstore::{Blockstore, MemoryBlockstore};
 use fvm_ipld_car::CarHeader;
-use fvm_ipld_encoding::{BytesDe, BytesSer, Cbor};
+use fvm_ipld_encoding::strict_bytes;
 use fvm_ipld_encoding::CborStore;
 use fvm_ipld_encoding::RawBytes;
-use fvm_ipld_encoding::strict_bytes;
+use fvm_ipld_encoding::{BytesDe, BytesSer, Cbor};
 use fvm_ipld_hamt::Hamt;
 use fvm_shared::address::Address;
 use fvm_shared::bigint::{BigInt, Integer};
@@ -62,10 +64,8 @@ pub async fn export_test_vector_file(input: EvmContractInput, path: PathBuf) -> 
     let store = TracingBlockStore::new(MemoryBlockstore::new());
 
     let (pre_state_root, post_state_root) = load_evm_contract_input(&store, actor_codes, &input)?;
-    let pre_state_root =
-        store.put_cbor(&(5, pre_state_root, EMPTY_ARR_CID), Code::Blake2b256)?;
-    let post_state_root =
-        store.put_cbor(&(5, post_state_root, EMPTY_ARR_CID), Code::Blake2b256)?;
+    let pre_state_root = store.put_cbor(&(5, pre_state_root, EMPTY_ARR_CID), Code::Blake2b256)?;
+    let post_state_root = store.put_cbor(&(5, post_state_root, EMPTY_ARR_CID), Code::Blake2b256)?;
 
     //car_bytes
     let car_header = CarHeader::new(vec![pre_state_root, post_state_root], 1);
@@ -100,13 +100,28 @@ pub async fn export_test_vector_file(input: EvmContractInput, path: PathBuf) -> 
     println!("receipt: {:?}", receipt);
 
     // let (pre_state_root, post_state_root, message, receipt, bytes) = export(input).await;
+
+    const ENTROPY: &[u8] = b"prevrandao";
+    let randomness = vec![RandomnessMatch {
+        on: RandomnessRule {
+            kind: vector::RandomnessKind::Beacon,
+            dst: 10, //fil_actors_runtime::runtime::randomness::DomainSeparationTag::EvmPrevRandao as i64,
+            //TODO
+            epoch: 2383680,
+            entropy: Vec::from(ENTROPY),
+        },
+        //TODO
+        ret: Vec::from([0u8; 32]),
+    }];
     let variants = vec![Variant {
         id: String::from("test_evm"),
         epoch: 2383680,
+        timestamp: Some(1671507767),
         nv: NetworkVersion::V18 as u32,
     }];
     let test_vector = TestVector {
         class: String::from_str("message")?,
+        chain_id: Some(1),
         selector: None,
         meta: None,
         car: gz_car_bytes,
@@ -121,7 +136,8 @@ pub async fn export_test_vector_file(input: EvmContractInput, path: PathBuf) -> 
             state_tree: StateTreeVector { root_cid: post_state_root },
             receipts: vec![receipt],
         },
-        // randomness: fvm_shared::randomness::Randomness(vec![0u8; RANDOMNESS_LENGTH]),
+        tipset_cids: None,
+        randomness,
     };
 
     let output = File::create(&path)?;

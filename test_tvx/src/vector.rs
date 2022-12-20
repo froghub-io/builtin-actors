@@ -1,5 +1,6 @@
 use cid::Cid;
-use fvm_shared::{clock::ChainEpoch, randomness::Randomness, receipt::Receipt};
+use fvm_ipld_encoding::tuple::*;
+use fvm_shared::{clock::ChainEpoch, receipt::Receipt};
 use serde::{Deserialize, Deserializer, Serialize};
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -42,7 +43,42 @@ pub struct StateTreeVector {
 pub struct Variant {
     pub id: String,
     pub epoch: ChainEpoch,
+    pub timestamp: Option<u64>,
     pub nv: u32,
+}
+
+/// Encoded VM randomness used to be replayed.
+pub type Randomness = Vec<RandomnessMatch>;
+
+/// One randomness entry.
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct RandomnessMatch {
+    pub on: RandomnessRule,
+    #[serde(with = "base64_bytes")]
+    pub ret: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq, Clone)]
+#[serde(rename_all = "lowercase")]
+pub enum RandomnessKind {
+    Beacon,
+    Chain,
+}
+
+/// Rule for matching when randomness is returned.
+#[derive(Debug, Deserialize_tuple, Serialize_tuple, PartialEq, Eq, Clone)]
+pub struct RandomnessRule {
+    pub kind: RandomnessKind,
+    pub dst: i64,
+    pub epoch: ChainEpoch,
+    #[serde(with = "base64_bytes")]
+    pub entropy: Vec<u8>,
+}
+
+#[derive(Debug, Deserialize, Serialize, Clone)]
+pub struct TipsetCid {
+    pub epoch: ChainEpoch,
+    pub cid: Cid,
 }
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
@@ -74,6 +110,9 @@ pub struct ApplyMessage {
 #[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct TestVector {
     pub class: String,
+
+    pub chain_id: Option<u64>,
+
     pub selector: Option<Selector>,
     #[serde(rename = "_meta")]
     pub meta: Option<MetaData>,
@@ -83,8 +122,11 @@ pub struct TestVector {
     pub preconditions: PreConditions,
     pub apply_messages: Vec<ApplyMessage>,
     pub postconditions: PostConditions,
-    // #[serde(default)]
-    // pub randomness: Randomness,
+    #[serde(default)]
+    pub randomness: Randomness,
+
+    #[serde(default)]
+    pub tipset_cids: Option<Vec<TipsetCid>>,
 }
 
 mod base64_bytes {
