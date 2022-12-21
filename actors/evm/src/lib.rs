@@ -9,12 +9,13 @@ use interpreter::{address::EthAddress, system::load_bytecode};
 
 use crate::interpreter::output::Outcome;
 
+pub use self::state::State;
+
 pub mod interpreter;
 mod state;
 
 use {
     crate::interpreter::{execute, Bytecode, ExecutionState, StatusCode, System, U256},
-    crate::state::State,
     bytes::Bytes,
     cid::Cid,
     fil_actors_runtime::{
