@@ -1,3 +1,4 @@
+use clap::Parser;
 use ethers::prelude::*;
 use ethers::providers::{Http, Middleware, Provider};
 use ethers::utils::get_contract_address;
@@ -8,7 +9,7 @@ use std::{
 };
 use std::fs::File;
 use std::path::Path;
-use test_tvx::{EvmContractBalance, EvmContractContext, EvmContractInput, EvmContractState};
+use test_tvx::{EvmContractBalance, EvmContractContext, EvmContractInput, EvmContractState, export_test_vector_file};
 
 const OP_SSTORE: &str = "SSTORE";
 const OP_SLOAD: &str = "SLOAD";
@@ -24,12 +25,29 @@ const OP_SELFBALANCE: &str = "SELFBALANCE";
 const OP_CREATE: &str = "CREATE";
 const OP_CREATE2: &str = "CREATE2";
 
+#[derive(Parser, Debug)]
+#[clap(name = env!("CARGO_PKG_NAME"))]
+#[clap(version = env!("CARGO_PKG_VERSION"))]
+#[clap(about = "Generate a test vector by extracting it from a live chain.", long_about = None)]
+struct Cli {
+    #[clap(default_value = "http://localhost:8545", short, long)]
+    geth_rpc_endpoint: String,
+
+    /// eth transaction hash
+    #[clap(short, long)]
+    tx_hash: String,
+
+    /// test-vector file output path ( such as: /a/b/xx/xxx.json )
+    #[clap(short, long)]
+    out: String,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let tx_hash = "0x29c237b7eacede6b2a8060192ea7634b187382bc1117690d5e92d3b6824da4f2";
-    let tx_hash = H256::from_str(tx_hash)?;
+    let cli = Cli::parse();
+    let tx_hash = H256::from_str(&cli.tx_hash)?;
 
-    let provider = Provider::<Http>::try_from("http://localhost:8545")
+    let provider = Provider::<Http>::try_from(cli.geth_rpc_endpoint)
         .expect("could not instantiate HTTP Provider");
 
     let transaction = provider.get_transaction(tx_hash).await?.unwrap();
@@ -333,10 +351,11 @@ async fn main() -> anyhow::Result<()> {
                                 post_codes,
                                 status,
                                 return_result);
-    println!("input: {:?}", input);
-    let path = Path::new("/Users/grw/Desktop/constract2_test_vector.json").to_path_buf();
-    let output = File::create(&path).unwrap();
-    serde_json::to_writer_pretty(output, &input).unwrap();
+
+    export_test_vector_file(
+        input,
+        Path::new(&cli.out).to_path_buf(),
+    ).await?;
 
     Ok(())
 }

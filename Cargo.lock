@@ -4495,6 +4495,7 @@ dependencies = [
  "blake2b_simd",
  "bytes",
  "cid 0.8.6",
+ "clap",
  "ethers 0.17.0",
  "ethers 1.0.2",
  "fil_actor_account",
