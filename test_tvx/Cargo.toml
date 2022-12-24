@@ -1,0 +1,28 @@
+[package]
+name = "test_tvx"
+description = "Reference vm for integration testing builtin actors"
+version = "10.0.0-alpha.1"
+license = "MIT OR Apache-2.0"
+authors = ["Protocol Labs", "Filecoin Core Devs"]
+edition = "2021"
+keywords = ["filecoin", "web3", "wasm"]
+publish = false
+
+[lib]
+
+[dependencies]
+fil_actors_runtime = { version = "10.0.0-alpha.1", path = "../runtime", features = [ "test_utils" ] }
+fil_actor_evm = { version = "10.0.0-alpha.1", path = "../actors/evm" }
+fil_actor_eam = { version = "10.0.0-alpha.1", path = "../actors/eam" }
+test_vm = { version = "10.0.0-alpha.1", path = "../test_vm" }
+fevm-test-vectors = { git = "https://github.com/froghub-io/fevm-test-vectors.git" }
+
+fvm_ipld_blockstore = { version = "0.1.1", default-features = false }
+fvm_ipld_encoding = { version = "0.3.2", default-features = false }
+fvm_shared = { version = "3.0.0-alpha.15", default-features = false }
+serde = { version = "1.0.136", features = ["derive"] }
+hex = "0.4.3"
+serde_json = "1.0.87"
+
+[features]
+m2-native = []
