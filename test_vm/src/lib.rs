@@ -70,6 +70,7 @@ use std::collections::HashMap;
 use std::error::Error;
 use std::fmt;
 use std::ops::Add;
+use fil_actors_runtime::shared::HAMT_BIT_WIDTH;
 
 pub mod util;
 
@@ -122,7 +123,7 @@ pub const FIRST_TEST_USER_ADDR: ActorID = FIRST_NON_SINGLETON_ADDR + 3;
 // accounts for verifreg root signer and msig
 impl<'bs> VM<'bs> {
     pub fn new(store: &'bs MemoryBlockstore) -> VM<'bs> {
-        let mut actors = Hamt::<&'bs MemoryBlockstore, Actor, BytesKey, Sha256>::new(store);
+        let mut actors = Hamt::<&'bs MemoryBlockstore, Actor, BytesKey, Sha256>::new_with_bit_width(store, HAMT_BIT_WIDTH);
         VM {
             store,
             state_root: RefCell::new(actors.flush().unwrap()),
@@ -350,9 +351,10 @@ impl<'bs> VM<'bs> {
             return Some(act.clone());
         }
         // go to persisted map
-        let actors = Hamt::<&'bs MemoryBlockstore, Actor, BytesKey, Sha256>::load(
+        let actors = Hamt::<&'bs MemoryBlockstore, Actor, BytesKey, Sha256>::load_with_bit_width(
             &self.state_root.borrow(),
             self.store,
+            HAMT_BIT_WIDTH
         )
         .unwrap();
         let actor = actors.get(&addr.to_bytes()).unwrap().cloned();
@@ -370,9 +372,10 @@ impl<'bs> VM<'bs> {
 
     pub fn checkpoint(&self) -> Cid {
         // persist cache on top of latest checkpoint and clear
-        let mut actors = Hamt::<&'bs MemoryBlockstore, Actor, BytesKey, Sha256>::load(
+        let mut actors = Hamt::<&'bs MemoryBlockstore, Actor, BytesKey, Sha256>::load_with_bit_width(
             &self.state_root.borrow(),
             self.store,
+            HAMT_BIT_WIDTH
         )
         .unwrap();
         for (addr, act) in self.actors_cache.borrow().iter() {
@@ -492,9 +495,10 @@ impl<'bs> VM<'bs> {
     /// Checks the state invariants and returns broken invariants.
     pub fn check_state_invariants(&self) -> anyhow::Result<MessageAccumulator> {
         self.checkpoint();
-        let actors = Hamt::<&'bs MemoryBlockstore, Actor, BytesKey, Sha256>::load(
+        let actors = Hamt::<&'bs MemoryBlockstore, Actor, BytesKey, Sha256>::load_with_bit_width(
             &self.state_root.borrow(),
             self.store,
+            HAMT_BIT_WIDTH
         )
         .unwrap();
 
@@ -1222,8 +1226,8 @@ impl Primitives for VM<'_> {
 
     fn hash_64(&self, hasher: SupportedHashes, data: &[u8]) -> ([u8; 64], usize) {
         let hasher = Code::try_from(hasher as u64).unwrap();
-        let (len, buf, ..) = hasher.digest(data).into_inner();
-        (buf, len as usize)
+        let (.., buf, writer) = hasher.digest(data).into_inner();
+        (buf, writer as usize)
     }
 
     fn recover_secp_public_key(
