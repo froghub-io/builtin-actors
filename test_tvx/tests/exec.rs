@@ -1,6 +1,6 @@
-use fevm_test_vectors::{load_evm_contract_input, to_message};
+use fevm_test_vectors::{get_actor_state, load_evm_contract_input, to_message};
 use fevm_test_vectors::types::{ContractParams, CreateParams, EvmContractInput};
-use fevm_test_vectors::util::{get_test_code_cid_map, is_create_contract};
+use fevm_test_vectors::util::{get_test_code_cid_map, is_create_contract, u256_to_bytes};
 use fvm_ipld_blockstore::MemoryBlockstore;
 use fvm_ipld_encoding::{BytesDe, RawBytes};
 use fil_actors_runtime::test_utils::ACTOR_CODES;
@@ -16,8 +16,8 @@ fn exec_contract() {
         println!("--- input ---");
         let store = MemoryBlockstore::new();
         let actor_codes = get_test_code_cid_map().unwrap();
-        let (pre_state_root, _, _) = load_evm_contract_input(&store, actor_codes, &input).expect("failed to load evm contract input");
-
+        let (pre_state_root, post_state_root, _) = load_evm_contract_input(&store, actor_codes, &input).expect("failed to load evm contract input");
+        let post_state = get_actor_state(post_state_root, &store).unwrap();
         let message = to_message(&input.context);
 
         let vm = test_vm::VM::new(&store);
@@ -59,6 +59,15 @@ fn exec_contract() {
             let result = hex::encode(return_value);
 
             assert_eq!(result, input.context.return_result);
+        }
+        // compare slot
+        let vm_state = get_actor_state(vm.state_root.borrow().clone(), &store).unwrap();
+        for (eth_addr, slot) in post_state {
+            let vm_slot = vm_state.get(&eth_addr).expect(&*format!("vm actor state slot empty: {:?}", eth_addr));
+            for (k, v) in slot {
+                let vv = vm_slot.get(&k).expect(&*format!("vm actor state slot key empty: {:?}", eth_addr)).clone();
+                assert_eq!(v, vv);
+            }
         }
     }
 }
