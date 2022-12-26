@@ -1,23 +1,29 @@
-use fevm_test_vectors::{get_actor_state, load_evm_contract_input, to_message};
 use fevm_test_vectors::types::{ContractParams, CreateParams, EvmContractInput};
 use fevm_test_vectors::util::{get_test_code_cid_map, is_create_contract, u256_to_bytes};
+use fevm_test_vectors::{get_evm_actors_slots, load_evm_contract_input, to_message};
+use fil_actors_runtime::test_utils::ACTOR_CODES;
 use fvm_ipld_blockstore::MemoryBlockstore;
 use fvm_ipld_encoding::{BytesDe, RawBytes};
-use fil_actors_runtime::test_utils::ACTOR_CODES;
 
 #[test]
 fn exec_contract() {
     let inputs: [EvmContractInput; 1] = [
         // serde_json::from_str(include_str!("contracts/contract1.json")).unwrap(),
-        serde_json::from_str(include_str!("contracts/contract.json")).unwrap(),
+        serde_json::from_str(include_str!(
+            "/Users/zhenghe/source/gitlab/ref-fvm/testing/conformance/evm-test-vectors/xxx2.json"
+        ))
+        .unwrap(),
         // serde_json::from_str(include_str!("contracts/contract3.json")).unwrap(),
     ];
     for input in inputs {
         println!("--- input ---");
         let store = MemoryBlockstore::new();
         let actor_codes = get_test_code_cid_map().unwrap();
-        let (pre_state_root, post_state_root, _) = load_evm_contract_input(&store, actor_codes, &input).expect("failed to load evm contract input");
-        let post_state = get_actor_state(post_state_root, &store).unwrap();
+        let (pre_state_root, post_state_root, _) =
+            load_evm_contract_input(&store, actor_codes, &input)
+                .expect("failed to load evm contract input");
+        let expected_evm_actors_slots =
+            get_evm_actors_slots("expected", post_state_root, &store).unwrap();
         let message = to_message(&input.context);
 
         let vm = test_vm::VM::new(&store);
@@ -61,12 +67,18 @@ fn exec_contract() {
             assert_eq!(result, input.context.return_result);
         }
         // compare slot
-        let vm_state = get_actor_state(vm.state_root.borrow().clone(), &store).unwrap();
-        for (eth_addr, slot) in post_state {
-            let vm_slot = vm_state.get(&eth_addr).expect(&*format!("vm actor state slot empty: {:?}", eth_addr));
-            for (k, v) in slot {
-                let vv = vm_slot.get(&k).expect(&*format!("vm actor state slot key empty: {:?}", eth_addr)).clone();
-                assert_eq!(v, vv);
+        let actual_evm_actors_slots =
+            get_evm_actors_slots("actual", vm.state_root.borrow().clone(), &store).unwrap();
+        for (eth_addr, expected_evm_actor_slots) in expected_evm_actors_slots {
+            let actual_evm_actor_slots = actual_evm_actors_slots
+                .get(&eth_addr)
+                .expect(&*format!("vm actor state slot empty: {:?}", eth_addr));
+            for (k, expected_slot_value) in expected_evm_actor_slots {
+                let actual_slot_value = actual_evm_actor_slots
+                    .get(&k)
+                    .expect(&*format!("vm actor state slot key empty: {:?}", eth_addr))
+                    .clone();
+                assert_eq!(actual_slot_value, expected_slot_value);
             }
         }
     }
