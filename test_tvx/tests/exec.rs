@@ -1,20 +1,19 @@
+use async_std::fs::File;
+use async_std::io::BufReader;
 use fevm_test_vectors::types::{ContractParams, CreateParams, EvmContractInput};
 use fevm_test_vectors::util::{get_test_code_cid_map, is_create_contract, u256_to_bytes};
 use fevm_test_vectors::{get_evm_actors_slots, load_evm_contract_input, to_message};
+use fil_actor_evm::interpreter::U256;
 use fil_actors_runtime::test_utils::ACTOR_CODES;
 use fvm_ipld_blockstore::MemoryBlockstore;
-use fvm_ipld_encoding::{BytesDe, RawBytes};
+use fvm_ipld_car::load_car;
+use fvm_ipld_encoding::{BytesDe, CborStore, RawBytes};
+use fvm_shared::state::StateRoot;
 
 #[test]
 fn exec_contract() {
-    let inputs: [EvmContractInput; 1] = [
-        // serde_json::from_str(include_str!("contracts/contract1.json")).unwrap(),
-        serde_json::from_str(include_str!(
-            "/Users/zhenghe/source/gitlab/ref-fvm/testing/conformance/evm-test-vectors/xxx2.json"
-        ))
-        .unwrap(),
-        // serde_json::from_str(include_str!("contracts/contract3.json")).unwrap(),
-    ];
+    let inputs: [EvmContractInput; 1] =
+        [serde_json::from_str(include_str!("contracts/contract.json")).unwrap()];
     for input in inputs {
         println!("--- input ---");
         let store = MemoryBlockstore::new();
@@ -82,4 +81,31 @@ fn exec_contract() {
             }
         }
     }
+}
+
+#[async_std::test]
+async fn compare_fvm_output() {
+    let bs = MemoryBlockstore::new();
+
+    let file = File::open("blockstores/blockstore.car").await.unwrap();
+    let reader = BufReader::new(file);
+
+    let cids = load_car(&bs, reader).await.unwrap();
+    let actual_post_root = cids[0];
+    let expected_post_root = cids[1];
+
+    if let Ok(Some(StateRoot { version, info, actors })) = bs.get_cbor(&actual_post_root) {
+        let _ = get_evm_actors_slots("actual", actors, &bs);
+    }
+
+    if let Ok(Some(StateRoot { version, info, actors })) = bs.get_cbor(&expected_post_root) {
+        let _ = get_evm_actors_slots("expected", actors, &bs);
+    }
+}
+
+#[test]
+fn test() {
+    let arr = [1, 2, 3, 4, 5];
+    println!("arr slice: {:?}", &arr[..5 - 2]);
+    println!("arr slice: {:?}", &arr[0]);
 }

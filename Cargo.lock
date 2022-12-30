@@ -1843,7 +1843,7 @@ dependencies = [
 [[package]]
 name = "fevm-test-vectors"
 version = "0.1.0"
-source = "git+https://github.com/froghub-io/fevm-test-vectors.git#c2fe9b672f99236badf4d949db2b345c5c2339e7"
+source = "git+https://github.com/froghub-io/fevm-test-vectors.git#d99f5bce24a85f768ef887ad191557b46a8045d2"
 dependencies = [
  "anyhow",
  "async-std",
@@ -1891,6 +1891,7 @@ dependencies = [
  "thiserror",
  "tokio",
  "tokio-stream",
+ "walkdir",
 ]
 
 [[package]]
@@ -5076,11 +5077,13 @@ dependencies = [
 name = "test_tvx"
 version = "10.0.0-alpha.1"
 dependencies = [
+ "async-std",
  "fevm-test-vectors",
  "fil_actor_eam 10.0.0-alpha.1",
  "fil_actor_evm 10.0.0-alpha.1",
  "fil_actors_runtime 10.0.0-alpha.1",
  "fvm_ipld_blockstore",
+ "fvm_ipld_car",
  "fvm_ipld_encoding",
  "fvm_shared",
  "hex",
