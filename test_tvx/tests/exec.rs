@@ -1,8 +1,9 @@
 use async_std::fs::File;
 use async_std::io::BufReader;
-use fevm_test_vectors::types::{ContractParams, CreateParams, EvmContractInput};
-use fevm_test_vectors::util::{get_test_code_cid_map, is_create_contract, u256_to_bytes};
+use fevm_test_vectors::types::{ContractParams, CreateParams};
+use fevm_test_vectors::util::{get_test_code_cid_map, u256_to_bytes};
 use fevm_test_vectors::{get_evm_actors_slots, load_evm_contract_input, to_message};
+use fevm_test_vectors::extractor::types::EthTransactionTestVector;
 use fil_actor_evm::interpreter::U256;
 use fil_actors_runtime::test_utils::ACTOR_CODES;
 use fvm_ipld_blockstore::MemoryBlockstore;
@@ -12,8 +13,8 @@ use fvm_shared::state::StateRoot;
 
 #[test]
 fn exec_contract() {
-    let inputs: [EvmContractInput; 1] =
-        [serde_json::from_str(include_str!("contracts/contract.json")).unwrap()];
+    let inputs: [EthTransactionTestVector; 1] =
+        [serde_json::from_str(include_str!("contracts/0x26c9c5e5e4f35e7eebcefec434b986b13fa5d7768c1e89a793c41be58f977195.json")).unwrap()];
     for input in inputs {
         println!("--- input ---");
         let store = MemoryBlockstore::new();
@@ -23,12 +24,12 @@ fn exec_contract() {
                 .expect("failed to load evm contract input");
         let expected_evm_actors_slots =
             get_evm_actors_slots("expected", post_state_root, &store).unwrap();
-        let message = to_message(&input.context);
+        let message = to_message(&input);
 
         let vm = test_vm::VM::new(&store);
         vm.state_root.replace(pre_state_root);
 
-        if is_create_contract(&input.context.to) {
+        if input.create_contract() {
             let params2: CreateParams = RawBytes::deserialize(&message.params).unwrap();
             let create_result = vm
                 .apply_message(
@@ -61,9 +62,8 @@ fn exec_contract() {
 
             let BytesDe(return_value) =
                 call_result.ret.deserialize().expect("failed to deserialize results");
-            let result = hex::encode(return_value);
 
-            assert_eq!(result, input.context.return_result);
+            assert_eq!(return_value, input.return_value.to_vec());
         }
         // compare slot
         let actual_evm_actors_slots =
